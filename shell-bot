@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Shell bot wrapper script
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Try pty version first, fall back to minimal
+if [ -f "$SCRIPT_DIR/shell_bot_pty_fixed.py" ]; then
+    exec python3 "$SCRIPT_DIR/shell_bot_pty_fixed.py" "$@"
+else
+    exec python3 "$SCRIPT_DIR/shell_bot_minimal.py" "$@"
+fi
