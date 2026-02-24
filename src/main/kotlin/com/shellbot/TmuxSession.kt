@@ -35,11 +35,31 @@ class TmuxSession(private val command: String) {
         // Kill any leftover session from a previous run
         exec("tmux", "kill-session", "-t", SESSION_NAME)
 
-        // Start detached tmux session running the command
-        val startResult = exec("tmux", "new-session", "-d", "-s", SESSION_NAME, command)
+        // Start detached tmux session running the command, atomically setting
+        // "remain-on-exit" so the pane survives even if the command exits instantly.
+        // The ";" argument is tmux's command separator — both commands are processed
+        // in a single tmux event loop iteration, before any "child exited" event.
+        val startResult = exec(
+            "tmux", "new-session", "-d", "-s", SESSION_NAME, command,
+            ";", "set-option", "-t", SESSION_NAME, "remain-on-exit", "on"
+        )
         if (startResult != 0) {
             log.error("Failed to create tmux session (is tmux installed?)")
             return 1
+        }
+
+        // Wait briefly to check if the command exits almost immediately.
+        // remain-on-exit keeps the session alive so we can still capture output.
+        Thread.sleep(200)
+
+        // If the pane is already dead, capture its output, print it, and exit.
+        if (!isTmuxPaneAlive()) {
+            val output = capturePane()
+            if (output.isNotBlank()) {
+                println(output)
+            }
+            exec("tmux", "kill-session", "-t", SESSION_NAME)
+            return 0
         }
 
         // Background thread: watch input.txt → tmux send-keys
@@ -103,6 +123,9 @@ class TmuxSession(private val command: String) {
             }
         }
 
+        // When the pane's command exits, auto-kill the session so attach returns cleanly.
+        exec("tmux", "set-hook", "-t", SESSION_NAME, "pane-died", "kill-session")
+
         // Attach to the tmux session — this is the blocking call.
         // inheritIO() gives the user full terminal control.
         val attachPb = ProcessBuilder("tmux", "attach", "-t", SESSION_NAME)
@@ -117,6 +140,37 @@ class TmuxSession(private val command: String) {
 
     private fun isTmuxSessionAlive(): Boolean {
         return exec("tmux", "has-session", "-t", SESSION_NAME) == 0
+    }
+
+    /** Returns true if the pane's process is still running (not "dead"). */
+    private fun isTmuxPaneAlive(): Boolean {
+        return try {
+            val pb = ProcessBuilder("tmux", "display-message", "-t", SESSION_NAME, "-p", "#{pane_dead}")
+            pb.redirectErrorStream(true)
+            val p = pb.start()
+            val output = p.inputStream.bufferedReader().readText().trim()
+            p.waitFor()
+            output != "1"
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Captures the full pane content including scrollback, filtering out tmux's "Pane is dead" line. */
+    private fun capturePane(): String {
+        return try {
+            val pb = ProcessBuilder("tmux", "capture-pane", "-t", SESSION_NAME, "-p", "-S", "-")
+            pb.redirectErrorStream(true)
+            val p = pb.start()
+            val output = p.inputStream.bufferedReader().readText()
+            p.waitFor()
+            output.lines()
+                .filter { !it.startsWith("Pane is dead") }
+                .joinToString("\n")
+                .trimEnd()
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     private fun exec(vararg cmd: String): Int {

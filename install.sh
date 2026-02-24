@@ -5,7 +5,7 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="$HOME/bin"
 JAR_NAME="shellbot.jar"
 SCRIPT_NAME="shellbot"
 
@@ -13,11 +13,8 @@ echo "Installing ShellBot PTY Kotlin..."
 echo "Project directory: $PROJECT_DIR"
 echo "Install directory: $INSTALL_DIR"
 
-# Check if running as root
-if [ "$EUID" -ne 0 ]; then
-    echo "Please run as root or with sudo"
-    exit 1
-fi
+# Ensure install directory exists
+mkdir -p "$INSTALL_DIR"
 
 # Build the project first
 echo ""
@@ -28,7 +25,7 @@ if ! "$PROJECT_DIR/build.sh"; then
 fi
 
 # Find the JAR file
-JAR_FILE=$(find "$PROJECT_DIR/target" -name "*.jar" ! -name "*sources*" ! -name "*tests*" | head -1)
+JAR_FILE=$(ls $PROJECT_DIR/target/shellbot-*.jar | head -1)
 
 if [ ! -f "$JAR_FILE" ]; then
     echo "Error: JAR file not found!"
@@ -40,13 +37,19 @@ echo "Found JAR: $JAR_FILE"
 
 # Copy JAR to install directory
 echo "Copying JAR to $INSTALL_DIR/$JAR_NAME..."
-cp "$JAR_FILE" "$INSTALL_DIR/$JAR_NAME"
+cp -f "$JAR_FILE" "$INSTALL_DIR/$JAR_NAME"
 
-# Create wrapper script
+# Create wrapper script (loops on exit code 3 for /sb_restart support)
 echo "Creating wrapper script $INSTALL_DIR/$SCRIPT_NAME..."
-cat > "$INSTALL_DIR/$SCRIPT_NAME" << EOF
+cat > "$INSTALL_DIR/$SCRIPT_NAME" << 'EOF'
 #!/bin/bash
-java -jar "$INSTALL_DIR/$JAR_NAME" "\$@"
+JAR="$HOME/bin/shellbot.jar"
+while true; do
+    java -jar "$JAR" "$@"
+    rc=$?
+    [ "$rc" -ne 3 ] && exit "$rc"
+    echo "shellbot: restarting..." >&2
+done
 EOF
 
 # Make wrapper executable

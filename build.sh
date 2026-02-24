@@ -34,7 +34,7 @@ echo "Creating executable JAR..."
 mvn package
 
 # Find the JAR file
-JAR_FILE=$(find "$PROJECT_DIR/target" -name "*.jar" ! -name "*sources*" ! -name "*tests*" | head -1)
+JAR_FILE=$(find "$PROJECT_DIR/target" -name "*.jar" ! -name "original-*" ! -name "*sources*" ! -name "*tests*" | head -1)
 
 if [ -f "$JAR_FILE" ]; then
     echo ""
