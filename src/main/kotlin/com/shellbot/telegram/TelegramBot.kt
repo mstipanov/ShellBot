@@ -4,23 +4,34 @@ import java.nio.file.Path
 import java.nio.file.Paths
 
 /**
- * Telegram bot with long-polling that manages a single process session.
+ * Telegram bot with long-polling.
+ *
+ * Two modes:
+ *   1. Tmux mode (tmuxSessionName != null): uses tmux send-keys / capture-pane
+ *      to interact with an existing tmux session. Used alongside local terminal.
+ *   2. Standalone mode (tmuxSessionName == null): manages its own ProcessSession
+ *      via /run, /kill commands. Used with --telegram flag.
  *
  * Commands:
  *   /start          — claim this bot (first user only)
- *   /run <command>  — start a new process (kills existing one)
+ *   /run <command>  — start a new process (standalone mode only)
  *   /output or /o   — show last 10 lines of output
- *   /kill           — kill the running process
- *   (any other text) — forwarded as stdin to the running process
+ *   /kill           — kill the running process / send Ctrl-C
+ *   (any other text) — forwarded as input
  *
- * Only the first user to send /start is authorized to use the bot.
- * The owner chat ID is persisted to ~/.shellbot/owner.txt.
+ * Only the first user to send /start is authorized.
+ * Owner chat ID is persisted to ~/.shellbot/owner.txt.
  */
-class TelegramBot(private val token: String) {
+class TelegramBot(
+    private val token: String,
+    private val tmuxSessionName: String? = null
+) {
     private val api = TelegramApi(token)
-    @Volatile var session: ProcessSession? = null
+    private var session: ProcessSession? = null
     private var offset = 0L
     private var ownerChatId: Long? = null
+
+    private val isTmuxMode get() = tmuxSessionName != null
 
     companion object {
         private val CONFIG_DIR: Path = Paths.get(System.getProperty("user.home"), ".shellbot")
@@ -37,9 +48,7 @@ class TelegramBot(private val token: String) {
                     println("Loaded owner chat ID: $id")
                 }
             }
-        } catch (_: Exception) {
-            // Ignore — treat as no saved owner
-        }
+        } catch (_: Exception) {}
     }
 
     private fun saveOwner(chatId: Long) {
@@ -51,9 +60,6 @@ class TelegramBot(private val token: String) {
         }
     }
 
-    /**
-     * Blocking long-polling loop. Call from the main thread or a dedicated thread.
-     */
     fun run() {
         loadOwner()
         println("Telegram bot started. Polling for updates...")
@@ -81,7 +87,6 @@ class TelegramBot(private val token: String) {
             return
         }
 
-        // All other commands require authorization
         if (ownerChatId == null) {
             api.sendMessage(chatId, "Bot not claimed yet. Send /start first.")
             return
@@ -95,7 +100,10 @@ class TelegramBot(private val token: String) {
             text.startsWith("/run ") -> handleRun(chatId, text.removePrefix("/run ").trim())
             text == "/output" || text == "/o" -> handleOutput(chatId)
             text == "/kill" -> handleKill(chatId)
-            text.startsWith("/") -> api.sendMessage(chatId, "Unknown command. Use /run, /output (/o), or /kill.")
+            text.startsWith("/") -> {
+                val cmds = if (isTmuxMode) "/output (/o), /kill" else "/run, /output (/o), /kill"
+                api.sendMessage(chatId, "Unknown command. Use $cmds.")
+            }
             else -> handleInput(chatId, text)
         }
     }
@@ -105,7 +113,8 @@ class TelegramBot(private val token: String) {
             ownerChatId = chatId
             saveOwner(chatId)
             println("Bot claimed by chat ID: $chatId")
-            api.sendMessage(chatId, "Bot claimed. You are the owner.\n\nCommands:\n/run <command> — start a process\n/output or /o — last 10 lines of output\n/kill — kill the process\nAny other text — send as input to the process")
+            val mode = if (isTmuxMode) "tmux session" else "standalone"
+            api.sendMessage(chatId, "Bot claimed ($mode mode).\n\nCommands:\n/output or /o — last 10 lines\n/kill — kill/interrupt process\nAny other text — send as input")
         } else if (chatId == ownerChatId) {
             api.sendMessage(chatId, "You are already the owner.")
         } else {
@@ -113,16 +122,95 @@ class TelegramBot(private val token: String) {
         }
     }
 
+    // --- Input ---
+
+    private fun handleInput(chatId: Long, text: String) {
+        if (isTmuxMode) {
+            if (!isTmuxAlive()) {
+                api.sendMessage(chatId, "Tmux session is not running.")
+                return
+            }
+            tmuxSendKeys(text)
+            tmuxSendEnter()
+        } else {
+            val s = session
+            if (s == null || !s.isAlive()) {
+                api.sendMessage(chatId, "No running process. Use /run <command> first.")
+                return
+            }
+            s.sendInput(text)
+        }
+    }
+
+    // --- Output ---
+
+    private fun handleOutput(chatId: Long) {
+        if (isTmuxMode) {
+            if (!isTmuxAlive()) {
+                api.sendMessage(chatId, "Tmux session is not running.")
+                return
+            }
+            val output = tmuxCapturePane()
+            val lines = output.lines()
+                .map { it.trimEnd() }
+                .dropLastWhile { it.isBlank() }
+                .takeLast(10)
+            if (lines.isEmpty()) {
+                api.sendMessage(chatId, "(no visible output)")
+            } else {
+                api.sendMessage(chatId, lines.joinToString("\n"))
+            }
+        } else {
+            val s = session
+            if (s == null) {
+                api.sendMessage(chatId, "No process running. Use /run <command> first.")
+                return
+            }
+            val lines = s.getLastLines(10)
+            if (lines.isEmpty()) {
+                val status = if (s.isAlive()) "running, no output yet" else "exited, no output"
+                api.sendMessage(chatId, "($status)")
+            } else {
+                val prefix = if (!s.isAlive()) "[exited]\n" else ""
+                api.sendMessage(chatId, prefix + lines.joinToString("\n"))
+            }
+        }
+    }
+
+    // --- Kill ---
+
+    private fun handleKill(chatId: Long) {
+        if (isTmuxMode) {
+            if (!isTmuxAlive()) {
+                api.sendMessage(chatId, "Tmux session is not running.")
+                return
+            }
+            // Send Ctrl-C to interrupt the running process
+            tmuxExec("send-keys", "-t", tmuxSessionName!!, "C-c")
+            api.sendMessage(chatId, "Sent Ctrl-C.")
+        } else {
+            val s = session
+            if (s == null || !s.isAlive()) {
+                api.sendMessage(chatId, "No running process to kill.")
+                return
+            }
+            s.kill()
+            api.sendMessage(chatId, "Process killed.")
+        }
+    }
+
+    // --- Run (standalone only) ---
+
     private fun handleRun(chatId: Long, command: String) {
+        if (isTmuxMode) {
+            api.sendMessage(chatId, "Process is managed locally. Use text input or /kill.")
+            return
+        }
         if (command.isBlank()) {
             api.sendMessage(chatId, "Usage: /run <command>")
             return
         }
-
-        session?.let {
-            if (it.isAlive()) it.kill()
-        }
-
+        session?.let { if (it.isAlive()) it.kill() }
         try {
             session = ProcessSession(command)
             api.sendMessage(chatId, "Started: $command")
@@ -131,39 +219,43 @@ class TelegramBot(private val token: String) {
         }
     }
 
-    private fun handleOutput(chatId: Long) {
-        val s = session
-        if (s == null) {
-            api.sendMessage(chatId, "No process running. Use /run <command> first.")
-            return
-        }
+    // --- Tmux helpers ---
 
-        val lines = s.getLastLines(10)
-        if (lines.isEmpty()) {
-            val status = if (s.isAlive()) "running, no output yet" else "exited, no output"
-            api.sendMessage(chatId, "($status)")
-        } else {
-            val prefix = if (!s.isAlive()) "[exited]\n" else ""
-            api.sendMessage(chatId, prefix + lines.joinToString("\n"))
+    private fun isTmuxAlive(): Boolean {
+        return tmuxExec("has-session", "-t", tmuxSessionName!!) == 0
+    }
+
+    private fun tmuxSendKeys(text: String) {
+        tmuxExec("send-keys", "-t", tmuxSessionName!!, "-l", text)
+    }
+
+    private fun tmuxSendEnter() {
+        tmuxExec("send-keys", "-t", tmuxSessionName!!, "Enter")
+    }
+
+    private fun tmuxCapturePane(): String {
+        return try {
+            val pb = ProcessBuilder("tmux", "capture-pane", "-t", tmuxSessionName!!, "-p")
+            pb.redirectErrorStream(true)
+            val p = pb.start()
+            val output = p.inputStream.bufferedReader().readText()
+            p.waitFor()
+            output
+        } catch (_: Exception) {
+            ""
         }
     }
 
-    private fun handleKill(chatId: Long) {
-        val s = session
-        if (s == null || !s.isAlive()) {
-            api.sendMessage(chatId, "No running process to kill.")
-            return
+    private fun tmuxExec(vararg args: String): Int {
+        return try {
+            val cmd = arrayOf("tmux") + args
+            val p = ProcessBuilder(*cmd)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start()
+            p.waitFor()
+        } catch (_: Exception) {
+            -1
         }
-        s.kill()
-        api.sendMessage(chatId, "Process killed.")
-    }
-
-    private fun handleInput(chatId: Long, text: String) {
-        val s = session
-        if (s == null || !s.isAlive()) {
-            api.sendMessage(chatId, "No running process. Use /run <command> first.")
-            return
-        }
-        s.sendInput(text)
     }
 }

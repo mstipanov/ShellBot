@@ -1,17 +1,18 @@
 package com.shellbot
 
+import com.shellbot.telegram.TelegramBot
 import java.io.File
 import java.nio.file.Paths
 
 /**
  * Runs a command inside a tmux session with full terminal access.
  *
- * Background threads provide file-based side-channel I/O:
- *   ~/.shellbot/output.txt — last 10 lines of visible pane output (updated every 500ms)
- *   ~/.shellbot/input.txt  — write text here to inject it as keyboard input
+ * Side-channels (all optional, run as daemon threads):
+ *   - ~/.shellbot/output.txt — last 10 lines of visible pane output
+ *   - ~/.shellbot/input.txt  — write text here to inject it as keyboard input
+ *   - Telegram bot            — if a token is found, provides remote /output and input
  *
  * tmux owns the PTY, so the child process (claude, etc.) gets a real terminal.
- * We never touch the process's I/O directly.
  */
 class TmuxSession(private val command: String) {
 
@@ -20,6 +21,7 @@ class TmuxSession(private val command: String) {
         private val CONFIG_DIR = Paths.get(System.getProperty("user.home"), ".shellbot").toFile()
         private val INPUT_FILE = File(CONFIG_DIR, "input.txt")
         private val OUTPUT_FILE = File(CONFIG_DIR, "output.txt")
+        private val TOKEN_FILE = File(CONFIG_DIR, "telegram.token")
     }
 
     fun run(): Int {
@@ -38,56 +40,55 @@ class TmuxSession(private val command: String) {
         }
 
         // Background thread: watch input.txt → tmux send-keys
-        val inputWatcher = Thread({
-            try {
-                while (isTmuxSessionAlive()) {
-                    Thread.sleep(200)
-                    if (INPUT_FILE.exists() && INPUT_FILE.length() > 0) {
-                        val text = INPUT_FILE.readText()
-                        if (text.isNotEmpty()) {
-                            INPUT_FILE.writeText("")
-                            // Send each line separately
-                            for (line in text.lines()) {
-                                if (line.isNotEmpty()) {
-                                    exec("tmux", "send-keys", "-t", SESSION_NAME, "-l", line)
-                                    exec("tmux", "send-keys", "-t", SESSION_NAME, "Enter")
-                                }
+        startDaemon("input-watcher") {
+            while (isTmuxSessionAlive()) {
+                Thread.sleep(200)
+                if (INPUT_FILE.exists() && INPUT_FILE.length() > 0) {
+                    val text = INPUT_FILE.readText()
+                    if (text.isNotEmpty()) {
+                        INPUT_FILE.writeText("")
+                        for (line in text.lines()) {
+                            if (line.isNotEmpty()) {
+                                exec("tmux", "send-keys", "-t", SESSION_NAME, "-l", line)
+                                exec("tmux", "send-keys", "-t", SESSION_NAME, "Enter")
                             }
                         }
                     }
                 }
-            } catch (_: Exception) {}
-        }, "input-watcher")
-        inputWatcher.isDaemon = true
-        inputWatcher.start()
+            }
+        }
 
         // Background thread: tmux capture-pane → output.txt
-        val outputCapture = Thread({
-            try {
-                while (isTmuxSessionAlive()) {
-                    Thread.sleep(500)
-                    try {
-                        val pb = ProcessBuilder("tmux", "capture-pane", "-t", SESSION_NAME, "-p")
-                        pb.redirectErrorStream(true)
-                        val p = pb.start()
-                        val output = p.inputStream.bufferedReader().readText()
-                        p.waitFor()
+        startDaemon("output-capture") {
+            while (isTmuxSessionAlive()) {
+                Thread.sleep(500)
+                try {
+                    val pb = ProcessBuilder("tmux", "capture-pane", "-t", SESSION_NAME, "-p")
+                    pb.redirectErrorStream(true)
+                    val p = pb.start()
+                    val output = p.inputStream.bufferedReader().readText()
+                    p.waitFor()
 
-                        // Take last 10 non-blank lines
-                        val lines = output.lines()
-                            .map { it.trimEnd() }
-                            .dropLastWhile { it.isBlank() }
-                            .takeLast(10)
+                    val lines = output.lines()
+                        .map { it.trimEnd() }
+                        .dropLastWhile { it.isBlank() }
+                        .takeLast(10)
 
-                        if (lines.isNotEmpty()) {
-                            OUTPUT_FILE.writeText(lines.joinToString("\n") + "\n")
-                        }
-                    } catch (_: Exception) {}
-                }
-            } catch (_: Exception) {}
-        }, "output-capture")
-        outputCapture.isDaemon = true
-        outputCapture.start()
+                    if (lines.isNotEmpty()) {
+                        OUTPUT_FILE.writeText(lines.joinToString("\n") + "\n")
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+
+        // Background thread: Telegram bot (if token is configured)
+        val token = loadTelegramToken()
+        if (token != null) {
+            startDaemon("telegram-bot") {
+                val bot = TelegramBot(token, tmuxSessionName = SESSION_NAME)
+                bot.run()
+            }
+        }
 
         // Attach to the tmux session — this is the blocking call.
         // inheritIO() gives the user full terminal control.
@@ -115,5 +116,27 @@ class TmuxSession(private val command: String) {
         } catch (_: Exception) {
             -1
         }
+    }
+
+    private fun startDaemon(name: String, block: () -> Unit) {
+        val thread = Thread({
+            try { block() } catch (_: Exception) {}
+        }, name)
+        thread.isDaemon = true
+        thread.start()
+    }
+
+    private fun loadTelegramToken(): String? {
+        val envToken = System.getenv("TELEGRAM_BOT_TOKEN")
+        if (!envToken.isNullOrBlank()) return envToken.trim()
+
+        try {
+            if (TOKEN_FILE.exists()) {
+                val token = TOKEN_FILE.readText().trim()
+                if (token.isNotBlank()) return token
+            }
+        } catch (_: Exception) {}
+
+        return null
     }
 }
