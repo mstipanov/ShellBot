@@ -1,5 +1,7 @@
 package com.shellbot
 
+import org.slf4j.LoggerFactory
+
 /**
  * ShellBot - Kotlin implementation of shell_bot_pty_fixed.py
  *
@@ -9,6 +11,7 @@ package com.shellbot
  * ANSI escape codes, and interactive input.
  */
 class ShellBot(private val command: String) {
+    private val log = LoggerFactory.getLogger(ShellBot::class.java)
     private var process: Process? = null
 
     /**
@@ -45,7 +48,7 @@ class ShellBot(private val command: String) {
 
             return exitCode
         } catch (e: Exception) {
-            System.err.println("Error: ${e.message}")
+            log.error("Error running command", e)
             return 1
         }
     }

@@ -1,6 +1,7 @@
 package com.shellbot.telegram
 
 import org.json.JSONObject
+import org.slf4j.LoggerFactory
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -11,6 +12,7 @@ import java.time.Duration
  * Thin HTTP wrapper for the Telegram Bot API.
  */
 class TelegramApi(private val token: String) {
+    private val log = LoggerFactory.getLogger(TelegramApi::class.java)
     private val baseUrl = "https://api.telegram.org/bot$token"
     private val client: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
@@ -47,7 +49,7 @@ class TelegramApi(private val token: String) {
         }
     }
 
-    fun sendMessage(chatId: Long, text: String) {
+    fun sendMessage(chatId: Long, text: String): Long? {
         val body = JSONObject()
         body.put("chat_id", chatId)
         body.put("text", text)
@@ -59,6 +61,49 @@ class TelegramApi(private val token: String) {
             .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
             .build()
 
-        client.send(request, HttpResponse.BodyHandlers.ofString())
+        val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+        return try {
+            val json = JSONObject(response.body())
+            if (json.getBoolean("ok")) {
+                val messageId = json.getJSONObject("result").getLong("message_id")
+                log.debug("[sendMessage] chatId={}, textLength={}, messageId={}", chatId, text.length, messageId)
+                messageId
+            } else {
+                log.warn("[sendMessage] API returned ok=false: {}", response.body())
+                null
+            }
+        } catch (e: Exception) {
+            log.error("[sendMessage] exception parsing response: {}", response.body(), e)
+            null
+        }
+    }
+
+    fun editMessageText(chatId: Long, messageId: Long, text: String): Boolean {
+        val body = JSONObject()
+        body.put("chat_id", chatId)
+        body.put("message_id", messageId)
+        body.put("text", text)
+
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create("$baseUrl/editMessageText"))
+            .timeout(Duration.ofSeconds(10))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+            .build()
+
+        return try {
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            val json = JSONObject(response.body())
+            val ok = json.getBoolean("ok")
+            if (ok) {
+                log.debug("[editMessageText] chatId={}, messageId={}, textLength={}", chatId, messageId, text.length)
+            } else {
+                log.warn("[editMessageText] API returned ok=false: {}", response.body())
+            }
+            ok
+        } catch (e: Exception) {
+            log.error("[editMessageText] exception", e)
+            false
+        }
     }
 }

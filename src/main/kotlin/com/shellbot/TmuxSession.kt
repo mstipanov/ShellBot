@@ -1,6 +1,8 @@
 package com.shellbot
 
+import com.shellbot.plugin.SessionPluginLoader
 import com.shellbot.telegram.TelegramBot
+import org.slf4j.LoggerFactory
 import java.io.File
 import java.nio.file.Paths
 
@@ -15,6 +17,7 @@ import java.nio.file.Paths
  * tmux owns the PTY, so the child process (claude, etc.) gets a real terminal.
  */
 class TmuxSession(private val command: String) {
+    private val log = LoggerFactory.getLogger(TmuxSession::class.java)
 
     companion object {
         private const val SESSION_NAME = "shellbot"
@@ -35,7 +38,7 @@ class TmuxSession(private val command: String) {
         // Start detached tmux session running the command
         val startResult = exec("tmux", "new-session", "-d", "-s", SESSION_NAME, command)
         if (startResult != 0) {
-            System.err.println("Failed to create tmux session (is tmux installed?)")
+            log.error("Failed to create tmux session (is tmux installed?)")
             return 1
         }
 
@@ -58,7 +61,13 @@ class TmuxSession(private val command: String) {
             }
         }
 
-        // Background thread: tmux capture-pane → output.txt
+        // Detect plugin for the command being run
+        val plugin = SessionPluginLoader.findPlugin(command)
+        if (plugin != null) {
+            log.info("Plugin activated: {}", plugin.name)
+        }
+
+        // Background thread: tmux capture-pane → output.txt (with plugin filtering)
         startDaemon("output-capture") {
             while (isTmuxSessionAlive()) {
                 Thread.sleep(500)
@@ -69,10 +78,14 @@ class TmuxSession(private val command: String) {
                     val output = p.inputStream.bufferedReader().readText()
                     p.waitFor()
 
-                    val lines = output.lines()
-                        .map { it.trimEnd() }
-                        .dropLastWhile { it.isBlank() }
-                        .takeLast(10)
+                    val lines = if (plugin != null) {
+                        plugin.filterOutput(output)
+                    } else {
+                        output.lines()
+                            .map { it.trimEnd() }
+                            .dropLastWhile { it.isBlank() }
+                            .takeLast(10)
+                    }
 
                     if (lines.isNotEmpty()) {
                         OUTPUT_FILE.writeText(lines.joinToString("\n") + "\n")
@@ -85,7 +98,7 @@ class TmuxSession(private val command: String) {
         val token = loadTelegramToken()
         if (token != null) {
             startDaemon("telegram-bot") {
-                val bot = TelegramBot(token, tmuxSessionName = SESSION_NAME)
+                val bot = TelegramBot(token, tmuxSessionName = SESSION_NAME, plugin = plugin)
                 bot.run()
             }
         }

@@ -3,6 +3,7 @@ package com.shellbot.terminal
 import org.jline.terminal.TerminalBuilder
 import org.jline.terminal.Terminal
 import org.jline.utils.NonBlockingReader
+import org.slf4j.LoggerFactory
 import java.io.*
 
 /**
@@ -10,6 +11,7 @@ import java.io.*
  * Provides raw mode, character reading, and terminal size handling.
  */
 class TerminalManager {
+    private val log = LoggerFactory.getLogger(TerminalManager::class.java)
     private var terminal: Terminal? = null
     private var reader: NonBlockingReader? = null
     private var originalTerminal: Terminal? = null
@@ -34,7 +36,7 @@ class TerminalManager {
 
             true
         } catch (e: Exception) {
-            System.err.println("Failed to initialize JLine terminal: ${e.message}")
+            log.error("Failed to initialize JLine terminal", e)
             false
         }
     }

@@ -1,6 +1,7 @@
 package com.shellbot
 
 import kotlinx.cli.*
+import org.slf4j.LoggerFactory
 import kotlin.system.exitProcess
 
 /**
@@ -14,6 +15,8 @@ import kotlin.system.exitProcess
  * Otherwise falls back to plain inheritIO.
  */
 object ShellBotMain {
+    private val log = LoggerFactory.getLogger(ShellBotMain::class.java)
+
     @JvmStatic
     fun main(args: Array<String>) {
         val parser = ArgParser("shellbot")
@@ -35,8 +38,7 @@ object ShellBotMain {
             parser.parse(args)
 
             if (verbose) {
-                println("ShellBot")
-                println("Command: $command")
+                log.info("ShellBot starting, command: {}", command)
             }
 
             val exitCode = if (isTmuxAvailable()) {
@@ -46,18 +48,17 @@ object ShellBotMain {
             }
 
             if (verbose) {
-                println("\nProcess exited with code: $exitCode")
+                log.info("Process exited with code: {}", exitCode)
             }
 
             exitProcess(exitCode)
 
         } catch (e: IllegalArgumentException) {
-            System.err.println("Error: ${e.message}")
-            System.err.println("Usage: shellbot -c \"command\"")
+            log.error("Error: {}", e.message)
+            log.error("Usage: shellbot -c \"command\"")
             exitProcess(1)
         } catch (e: Exception) {
-            System.err.println("Unexpected error: ${e.message}")
-            e.printStackTrace()
+            log.error("Unexpected error", e)
             exitProcess(1)
         }
     }
