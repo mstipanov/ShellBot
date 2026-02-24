@@ -1,158 +1,131 @@
-# ShellBot PTY - Kotlin
+# ShellBot
 
-A Kotlin rewrite of `shell_bot_pty_fixed.py` with proper Maven project structure.
+A terminal wrapper that runs [Claude Code](https://docs.anthropic.com/en/docs/claude-code) inside a tmux session and lets you monitor and control it remotely via Telegram.
 
-## Project Structure
+Claude Code is a powerful CLI agent, but long-running sessions require you to stay at your terminal. ShellBot solves this by wrapping the session in tmux, tracking Claude's state (working, idle, needs permission), and forwarding clean output to a Telegram bot you control from your phone.
+
+## How It Works
 
 ```
-shellbot-kotlin/
-├── pom.xml                      # Maven build configuration
-├── src/
-│   ├── main/
-│   │   └── kotlin/
-│   │       └── com/
-│   │           └── shellbot/
-│   │               ├── ShellBot.kt           # Main ShellBot class
-│   │               ├── Main.kt               # CLI entry point
-│   │               ├── AdvancedShellBot.kt   # JLine-enhanced version
-│   │               └── terminal/
-│   │                   └── TerminalManager.kt # JLine terminal wrapper
-│   └── test/
-│       └── kotlin/
-│           └── com/
-│               └── shellbot/
-│                   └── ShellBotTest.kt       # Unit tests
-├── examples/
-│   └── Example.kt               # Usage examples
-└── README.md                    # This file
+┌─────────────┐      tmux session        ┌─────────────┐
+│  Your       │◄──── attach/detach ─────►│  Claude     │
+│  Terminal   │                          │  Code       │
+└─────────────┘                          └──────┬──────┘
+                                                │
+                    ┌──────────────────────────►│ capture pane
+                    │                           │ send keys
+              ┌─────┴──────┐                    │
+              │  ShellBot  │◄───────────────────┘
+              │  Daemon    │
+              └─────┬──────┘
+                    │
+                    │ Telegram Bot API
+                    ▼
+              ┌────────────┐
+              │  Telegram  │
+              │  (phone)   │
+              └────────────┘
 ```
 
-## Features
+1. ShellBot creates a detached tmux session running `claude`
+2. Background daemons capture output and poll for Telegram messages
+3. The **ClaudePlugin** strips terminal UI artifacts and tracks Claude's state
+4. You get notified on Telegram when Claude is idle or needs permission
+5. You can send input, press Enter, or Ctrl-C directly from Telegram
 
-- **I/O Forwarding**: Forward stdin/stdout/stderr between console and subprocess
-- **Terminal Support**: Optional JLine integration for better terminal handling
-- **Multi-threaded**: Separate threads for input/output handling
-- **Control Character Handling**: Basic Ctrl+C, Ctrl+D support
-- **Configurable**: Set environment variables, working directory, verbosity
+## Prerequisites
 
-## Dependencies
+- Java 21+
+- Maven
+- tmux
+- A Telegram bot token (create one via [@BotFather](https://t.me/BotFather))
 
-- **Kotlin 1.9.0**: Standard library
-- **kotlinx-cli 0.3.6**: Command-line argument parsing
-- **JLine 3.23.0**: Terminal operations (optional)
-- **JNA 5.13.0**: Native PTY support (stub/placeholder)
-- **JUnit 5.9.2**: Testing
-
-## Building
-
-### With Maven:
+## Build and Install
 
 ```bash
-# Clean build
-mvn clean package
-
-# Run tests
-mvn test
-
-# Create executable JAR
-mvn package
-
-# Run directly
-mvn compile exec:java -Dexec.mainClass="com.shellbot.ShellBotMain" -Dexec.args="-c 'echo Hello'"
+./install.sh
 ```
 
-### Executable JAR:
+This builds the project, copies the JAR to `~/bin/shellbot.jar`, and creates a `~/bin/shellbot` wrapper script. Make sure `~/bin` is in your `PATH`.
 
-After building, find the executable JAR in `target/shellbot-kotlin-1.0.0.jar`
+## Configuration
 
-```bash
-java -jar target/shellbot-kotlin-1.0.0.jar -c "your_command"
+Provide your Telegram bot token via either:
+
+- Environment variable: `export TELEGRAM_BOT_TOKEN=<your-token>`
+- File: `~/.shellbot/telegram.token`
+
+Optional settings in `~/.shellbot/config.properties`:
+
+```properties
+# Seconds of idle output before sending a notification (default: 10)
+idle.notify.seconds=10
 ```
 
 ## Usage
 
-### Basic:
-
 ```bash
-# Simple command
-shellbot -c "echo Hello World"
+# Run Claude Code with Telegram control
+shellbot -c "claude"
 
-# Python script
-shellbot -c "python3 adding_game.py"
+# Run any command
+shellbot -c "python3 train.py"
 
-# With verbose output
-shellbot -c "ls -la" -v
-
-# Set environment variable
-shellbot -c "echo \$MY_VAR" -e "MY_VAR=test"
+# Verbose mode
+shellbot -c "claude" -v
 ```
 
-### Programmatic Usage:
+ShellBot attaches you to the tmux session -- you interact with Claude Code normally in your terminal. The Telegram bot runs in the background.
 
-```kotlin
-import com.shellbot.ShellBot
+## Telegram Commands
 
-fun main() {
-    val shellBot = ShellBot("python3 script.py")
-    val exitCode = shellBot.run()
-    println("Exit code: $exitCode")
-}
+Send `/start` to your bot to claim ownership (first user only). Then:
+
+| Command | Description |
+|---------|-------------|
+| `/sb_output` or `/sb_o` | Show last lines of output |
+| `/sb_enter` or `/sb_e` | Send Enter key |
+| `/sb_kill` | Send Ctrl-C |
+| `/sb_help` | Show help |
+| *(any text)* | Forwarded as keyboard input to the session |
+
+## Claude Code Notifications
+
+When running `claude`, the ClaudePlugin automatically detects state changes and notifies you:
+
+- **Idle** -- Claude finished working and is waiting for input
+- **Permission required** -- Claude is asking to run a tool and needs your approval
+
+Output sent to Telegram is cleaned up: ANSI escapes, box-drawing characters, and status bar lines are stripped, leaving only the meaningful content.
+
+## File-Based I/O
+
+ShellBot also exposes side-channels for scripting:
+
+- `~/.shellbot/output.txt` -- last captured output (updated every 500ms)
+- `~/.shellbot/input.txt` -- write text here to inject keyboard input
+
+## Auto-Restart
+
+The install script's wrapper supports automatic restart. If the wrapped process exits with code 3, ShellBot restarts automatically.
+
+## Project Structure
+
 ```
-
-### Advanced (with JLine):
-
-```kotlin
-import com.shellbot.AdvancedShellBot
-
-fun main() {
-    val shellBot = AdvancedShellBot("interactive_program")
-    val exitCode = shellBot.run()
-}
-```
-
-## Implementation Notes
-
-### Compared to Python Version:
-
-1. **Architecture**: Multi-threaded vs Python's single-threaded `select()`
-2. **PTY Support**: Basic I/O forwarding vs true pseudo-terminal
-3. **Terminal Control**: JLine wrapper vs direct terminal system calls
-4. **Error Handling**: Kotlin exception handling vs Python try/except
-
-### Limitations:
-
-1. **No true PTY**: Current implementation doesn't provide actual `forkpty()` like Python
-2. **Signal handling**: Basic Ctrl+C support, limited other signals
-3. **Terminal modes**: Simplified terminal emulation
-
-### For True PTY Support:
-
-To match Python's functionality exactly, you would need:
-
-1. **JNI/JNA bindings** for `forkpty()`, `tcgetattr()`, `tcsetattr()`
-2. **Native library** with C/C++ PTY implementation
-3. **Signal handling** for proper terminal control
-
-## Testing
-
-```bash
-# Run all tests
-mvn test
-
-# Run specific test class
-mvn test -Dtest=ShellBotTest
-
-# Generate test coverage report
-mvn jacoco:report
+src/main/kotlin/com/shellbot/
+├── Main.kt                    # Entry point, CLI parsing
+├── TmuxSession.kt             # Core: tmux lifecycle, daemons, Telegram setup
+├── ShellBot.kt                # Fallback when tmux is unavailable
+├── plugin/
+│   ├── SessionPlugin.kt       # Plugin interface
+│   ├── SessionPluginLoader.kt # SPI-based plugin discovery
+│   └── ClaudePlugin.kt        # State tracking and output filtering
+└── telegram/
+    ├── TelegramApi.kt          # Telegram Bot HTTP API client
+    ├── TelegramBot.kt          # Message handling and command routing
+    └── ProcessSession.kt       # Subprocess management (standalone mode)
 ```
 
 ## License
 
-Apache 2.0
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make changes with tests
-4. Submit pull request
+MIT
