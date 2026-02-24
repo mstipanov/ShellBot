@@ -3,5 +3,9 @@
 *.iws
 *.iml
 
+/local/
 /.claude/
 /.venv/
+/target/
+dependency-reduced-pom.xml
+__pycache__/
