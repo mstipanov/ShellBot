@@ -10,7 +10,7 @@ package com.shellbot.plugin
 interface SessionPlugin {
     val name: String
     fun matches(command: String): Boolean
-    fun checkForNotifications(currentOutput: String): List<String>
+    fun checkForNotifications(currentOutput: String, idleSeconds: Long = 0): List<String>
     fun filterOutput(rawOutput: String): List<String>
     fun onUserInput() {}
 

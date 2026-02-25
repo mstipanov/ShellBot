@@ -50,7 +50,7 @@ class TelegramBot(
         private val OWNER_FILE: Path = CONFIG_DIR.resolve("owner.txt")
         private val CONFIG_FILE: Path = CONFIG_DIR.resolve("config.properties")
 
-        private const val DEFAULT_IDLE_NOTIFY_SECONDS = 10L
+        private const val DEFAULT_IDLE_NOTIFY_SECONDS = 30L
 
         private fun loadIdleNotifySeconds(): Long {
             try {
@@ -343,7 +343,7 @@ class TelegramBot(
                             // Output unchanged — check if idle long enough to notify
                             val idleMs = System.currentTimeMillis() - lastChangeTime
                             if (idleMs >= idleNotifySeconds * 1000L) {
-                                val notifications = plugin.checkForNotifications(output)
+                                val notifications = plugin.checkForNotifications(output, idleNotifySeconds)
                                 for (msg in notifications) {
                                     api.sendMessage(owner, msg)
                                 }

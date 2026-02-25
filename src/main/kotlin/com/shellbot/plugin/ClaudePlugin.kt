@@ -17,6 +17,8 @@ class ClaudePlugin : SessionPlugin {
     private enum class ClaudeState { UNKNOWN, WORKING, IDLE, PERMISSION_REQUIRED }
 
     private val state = AtomicReference(ClaudeState.UNKNOWN)
+    private var idleSinceTime: Long = 0
+    private var lastNotificationTime: Long = 0
 
     override fun matches(command: String): Boolean {
         val cmd = command.trim().lowercase()
@@ -27,7 +29,7 @@ class ClaudePlugin : SessionPlugin {
         state.set(ClaudeState.WORKING)
     }
 
-    override fun checkForNotifications(currentOutput: String): List<String> {
+    override fun checkForNotifications(currentOutput: String, idleSeconds: Long): List<String> {
         val stripped = stripAnsi(currentOutput)
         val lines = stripped.lines()
             .map { it.trimEnd() }
@@ -38,10 +40,40 @@ class ClaudePlugin : SessionPlugin {
         val newState = detectState(lines)
         val previous = state.getAndSet(newState)
 
+        // Track when we entered idle state
+        if (newState == ClaudeState.IDLE && previous != ClaudeState.IDLE) {
+            idleSinceTime = System.currentTimeMillis()
+        }
+
+        // If idleSeconds provided, check time-based condition
+        if (idleSeconds > 0) {
+            // Permission notifications are always immediate
+            if (newState == ClaudeState.PERMISSION_REQUIRED) {
+                return listOf(SessionPlugin.NOTIFICATION_PERMISSION)
+            }
+
+            if (newState == ClaudeState.IDLE) {
+                val now = System.currentTimeMillis()
+                val timeInIdleState = (now - idleSinceTime) / 1000
+
+                // Only notify if in idle state long enough AND haven't recently notified
+                if (timeInIdleState >= idleSeconds && (now - lastNotificationTime) > (idleSeconds * 1000)) {
+                    lastNotificationTime = now
+                    return listOf(SessionPlugin.NOTIFICATION_IDLE)
+                }
+            }
+            // When idleSeconds > 0, only time-based notifications for IDLE, immediate for PERMISSION
+            return emptyList()
+        }
+
+        // Original state transition logic (for backward compatibility when idleSeconds = 0)
         if (newState == previous) return emptyList()
 
         return when (newState) {
-            ClaudeState.IDLE -> listOf(SessionPlugin.NOTIFICATION_IDLE)
+            ClaudeState.IDLE -> {
+                lastNotificationTime = System.currentTimeMillis()
+                listOf(SessionPlugin.NOTIFICATION_IDLE)
+            }
             ClaudeState.PERMISSION_REQUIRED -> listOf(SessionPlugin.NOTIFICATION_PERMISSION)
             else -> emptyList()
         }
