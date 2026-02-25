@@ -73,6 +73,12 @@ shellbot -c "python3 train.py"
 
 # Verbose mode
 shellbot -c "claude" -v
+
+# Use a different session ID (for testing)
+shellbot -c "claude" -s "shellbot-test"
+
+# Disable Telegram integration
+shellbot -c "claude" -nt
 ```
 
 ShellBot attaches you to the tmux session -- you interact with Claude Code normally in your terminal. The Telegram bot runs in the background.
@@ -102,8 +108,8 @@ Output sent to Telegram is cleaned up: ANSI escapes, box-drawing characters, and
 
 ShellBot also exposes side-channels for scripting:
 
-- `~/.shellbot/output.txt` -- last captured output (updated every 500ms)
-- `~/.shellbot/input.txt` -- write text here to inject keyboard input
+- `~/.shellbot/output-<session>.txt` -- last captured output (updated every 500ms)
+- `~/.shellbot/input-<session>.txt` -- write text here to inject keyboard input (where `<session>` is the session ID, default: `shellbot`)
 
 ## Auto-Restart
 

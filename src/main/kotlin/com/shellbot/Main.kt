@@ -34,6 +34,20 @@ object ShellBotMain {
             description = "Enable verbose output"
         ).default(false)
 
+        val noTelegram by parser.option(
+            ArgType.Boolean,
+            shortName = "nt",
+            fullName = "no-telegram",
+            description = "Force disable Telegram integration even if token exists"
+        ).default(false)
+
+        val sessionId by parser.option(
+            ArgType.String,
+            shortName = "s",
+            fullName = "session",
+            description = "Session ID to use (default: 'shellbot')"
+        ).default("shellbot")
+
         try {
             parser.parse(args)
 
@@ -42,7 +56,7 @@ object ShellBotMain {
             }
 
             val exitCode = if (isTmuxAvailable()) {
-                TmuxSession(command).run()
+                TmuxSession(command, noTelegram, sessionId).run()
             } else {
                 ShellBot(command).run()
             }

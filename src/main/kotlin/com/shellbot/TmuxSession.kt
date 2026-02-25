@@ -16,18 +16,25 @@ import java.nio.file.Paths
  *
  * tmux owns the PTY, so the child process (claude, etc.) gets a real terminal.
  */
-class TmuxSession(private val command: String) {
+class TmuxSession(private val command: String, private val noTelegram: Boolean = false, private val sessionId: String = "shellbot") {
     private val log = LoggerFactory.getLogger(TmuxSession::class.java)
 
     companion object {
-        private const val SESSION_NAME = "shellbot"
         private val CONFIG_DIR = Paths.get(System.getProperty("user.home"), ".shellbot").toFile()
-        private val INPUT_FILE = File(CONFIG_DIR, "input.txt")
-        private val OUTPUT_FILE = File(CONFIG_DIR, "output.txt")
         private val TOKEN_FILE = File(CONFIG_DIR, "telegram.token")
     }
 
+    private val SESSION_NAME = sessionId
+    private val INPUT_FILE = File(CONFIG_DIR, "input-$sessionId.txt")
+    private val OUTPUT_FILE = File(CONFIG_DIR, "output-$sessionId.txt")
+
     fun run(): Int {
+        // Validate session name (tmux session names must match regex: [a-zA-Z0-9_-]+)
+        if (!SESSION_NAME.matches(Regex("^[a-zA-Z0-9_-]+$"))) {
+            log.error("Invalid session name: '{}'. Session names can only contain letters, numbers, underscores and hyphens.", SESSION_NAME)
+            return 1
+        }
+
         CONFIG_DIR.mkdirs()
         INPUT_FILE.writeText("")
         OUTPUT_FILE.writeText("")
@@ -41,7 +48,11 @@ class TmuxSession(private val command: String) {
         // in a single tmux event loop iteration, before any "child exited" event.
         val startResult = exec(
             "tmux", "new-session", "-d", "-s", SESSION_NAME, command,
-            ";", "set-option", "-t", SESSION_NAME, "remain-on-exit", "on"
+            ";", "set-option", "-t", SESSION_NAME, "remain-on-exit", "on",
+            ";", "set-option", "-t", SESSION_NAME, "mouse", "on",
+            ";", "set-option", "-t", SESSION_NAME, "history-limit", "5000",
+            ";", "set-option", "-t", SESSION_NAME, "status-position", "top",
+            ";", "set-option", "-t", SESSION_NAME, "status-interval", "1"
         )
         if (startResult != 0) {
             log.error("Failed to create tmux session (is tmux installed?)")
@@ -114,13 +125,15 @@ class TmuxSession(private val command: String) {
             }
         }
 
-        // Background thread: Telegram bot (if token is configured)
+        // Background thread: Telegram bot (if token is configured and not disabled by flag)
         val token = loadTelegramToken()
-        if (token != null) {
+        if (token != null && !noTelegram) {
             startDaemon("telegram-bot") {
                 val bot = TelegramBot(token, tmuxSessionName = SESSION_NAME, plugin = plugin)
                 bot.run()
             }
+        } else if (noTelegram) {
+            log.info("Telegram integration disabled by command-line flag")
         }
 
         // When the pane's command exits, auto-kill the session so attach returns cleanly.
