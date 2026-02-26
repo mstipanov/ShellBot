@@ -58,8 +58,8 @@ Provide your Telegram bot token via either:
 Optional settings in `~/.shellbot/config.properties`:
 
 ```properties
-# Seconds of idle output before sending a notification (default: 10)
-idle.notify.seconds=10
+# Seconds of idle output before sending a notification (default: 30)
+idle.notify.seconds=30
 ```
 
 ## Usage
@@ -83,6 +83,16 @@ shellbot -c "claude" -nt
 
 ShellBot attaches you to the tmux session -- you interact with Claude Code normally in your terminal. The Telegram bot runs in the background.
 
+## Tmux Features Enabled by Default
+
+ShellBot automatically configures tmux with:
+- Mouse scrolling and pane selection enabled
+- Large scrollback buffer (5000 lines)
+- Status bar at top position
+- Status updates every second
+
+This provides a better terminal experience when working with Claude Code sessions.
+
 ## Telegram Commands
 
 Send `/start` to your bot to claim ownership (first user only). Then:
@@ -95,8 +105,12 @@ Send `/start` to your bot to claim ownership (first user only). Then:
 | `/sb_help` | Show help |
 | *(any text)* | Forwarded as keyboard input to the session |
 
-## Claude Code Notifications
+## Notifications
 
+### For All Sessions
+- **Session inactive** -- After 30 seconds of no new output (configurable), sends "Session inactive: input needed!" notification
+
+### Claude Code Specific (via ClaudePlugin)
 When running `claude`, the ClaudePlugin automatically detects state changes and notifies you:
 
 - **Idle** -- Claude finished working and is waiting for input
