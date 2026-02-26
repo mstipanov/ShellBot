@@ -41,6 +41,8 @@ class TelegramBot(
     private var lastSentMessageId: Long? = null
     @Volatile
     private var idleNotificationSent = false
+    @Volatile
+    private var generalIdleNotificationSent = false
 
     private val isTmuxMode get() = tmuxSessionName != null
 
@@ -102,7 +104,7 @@ class TelegramBot(
             log.info("Waiting for first user to claim the bot with /start...")
         }
 
-        if (plugin != null && isTmuxMode) {
+        if (isTmuxMode) {
             startMonitorDaemon()
         }
 
@@ -187,6 +189,7 @@ class TelegramBot(
             lastSentContent = null
             lastSentMessageId = null
             idleNotificationSent = false
+            generalIdleNotificationSent = false
             plugin?.onUserInput()
         } else {
             val s = session
@@ -198,6 +201,7 @@ class TelegramBot(
             lastSentContent = null
             lastSentMessageId = null
             idleNotificationSent = false
+            generalIdleNotificationSent = false
         }
     }
 
@@ -212,6 +216,7 @@ class TelegramBot(
             lastSentContent = null
             lastSentMessageId = null
             idleNotificationSent = false
+            generalIdleNotificationSent = false
             plugin?.onUserInput()
         } else {
             val s = session
@@ -223,6 +228,7 @@ class TelegramBot(
             lastSentContent = null
             lastSentMessageId = null
             idleNotificationSent = false
+            generalIdleNotificationSent = false
         }
     }
 
@@ -307,26 +313,43 @@ class TelegramBot(
         }
     }
 
-    // --- Plugin monitor ---
+    // --- Inactivity monitor ---
 
     private fun startMonitorDaemon() {
         val thread = Thread({
             try {
                 var lastChangeTime = System.currentTimeMillis()
+                var lastLogTime = System.currentTimeMillis()
+                var lastContent: String? = null
 
                 while (isTmuxAlive()) {
                     Thread.sleep(2000)
-                    val owner = ownerChatId ?: continue
                     try {
                         val output = tmuxCapturePane()
                         if (output.isBlank()) continue
-                        val lines = plugin!!.filterOutput(output)
+
+                        val lines = if (plugin != null) {
+                            plugin.filterOutput(output)
+                        } else {
+                            output.lines()
+                                .map { it.trimEnd() }
+                                .dropLastWhile { it.isBlank() }
+                                .takeLast(10)
+                        }
+
                         if (lines.isEmpty()) continue
                         val content = lines.joinToString("\n")
-                        if (content != lastSentContent) {
-                            lastChangeTime = System.currentTimeMillis()
-                            idleNotificationSent = false
 
+                        if (content != lastContent) {
+                            lastChangeTime = System.currentTimeMillis()
+                            lastLogTime = System.currentTimeMillis()
+                            idleNotificationSent = false
+            generalIdleNotificationSent = false
+                            generalIdleNotificationSent = false
+                            lastContent = content
+
+                            // Only send to Telegram if we have an owner
+                            val owner = ownerChatId ?: continue
                             val existingId = lastSentMessageId
                             if (existingId != null) {
                                 val edited = api.editMessageText(owner, existingId, content)
@@ -339,23 +362,44 @@ class TelegramBot(
                                 if (newId != null) lastSentMessageId = newId
                             }
                             lastSentContent = content
-                        } else if (!idleNotificationSent) {
-                            // Output unchanged — check if idle long enough to notify
+                        } else {
+                            // Output unchanged — check if idle long enough
                             val idleMs = System.currentTimeMillis() - lastChangeTime
                             if (idleMs >= idleNotifySeconds * 1000L) {
-                                val notifications = plugin.checkForNotifications(output, idleNotifySeconds)
-                                for (msg in notifications) {
-                                    api.sendMessage(owner, msg)
+                                // Always log to application log after 30s of inactivity
+                                val timeSinceLastLog = System.currentTimeMillis() - lastLogTime
+                                if (timeSinceLastLog >= idleNotifySeconds * 1000L) {
+                                    TelegramBot.log.info("Session inactive: no new output to send to Telegram")
+                                    // Send Telegram notification about inactivity (only once per inactivity period)
+                                    val owner = ownerChatId
+                                    if (owner != null && !generalIdleNotificationSent) {
+                                        val messageId = api.sendMessage(owner, "Session inactive: input needed!")
+                                        if (messageId != null) {
+                                            lastSentMessageId = messageId
+                                            lastSentContent = "Session inactive: input needed!"
+                                        }
+                                        generalIdleNotificationSent = true
+                                    }
+                                    lastLogTime = System.currentTimeMillis()
                                 }
-                                if (notifications.isNotEmpty()) {
-                                    idleNotificationSent = true
+
+                                // Only send plugin-specific Telegram notifications if plugin exists
+                                if (!idleNotificationSent && plugin != null) {
+                                    val notifications = plugin.checkForNotifications(output, idleNotifySeconds)
+                                    for (msg in notifications) {
+                                        val owner = ownerChatId ?: continue
+                                        api.sendMessage(owner, msg)
+                                    }
+                                    if (notifications.isNotEmpty()) {
+                                        idleNotificationSent = true
+                                    }
                                 }
                             }
                         }
                     } catch (_: Exception) {}
                 }
             } catch (_: Exception) {}
-        }, "plugin-monitor")
+        }, "inactivity-monitor")
         thread.isDaemon = true
         thread.start()
     }
