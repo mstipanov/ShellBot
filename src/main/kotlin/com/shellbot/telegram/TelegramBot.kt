@@ -40,6 +40,8 @@ class TelegramBot(
     @Volatile
     private var lastSentMessageId: Long? = null
     @Volatile
+    private var lastIdleMessageId: Long? = null  // Separate ID for idle messages
+    @Volatile
     private var idleNotificationSent = false
     @Volatile
     private var generalIdleNotificationSent = false
@@ -51,6 +53,13 @@ class TelegramBot(
         private val CONFIG_DIR: Path = Paths.get(System.getProperty("user.home"), ".shellbot")
         private val OWNER_FILE: Path = CONFIG_DIR.resolve("owner.txt")
         private val CONFIG_FILE: Path = CONFIG_DIR.resolve("config.properties")
+        private val LAST_MESSAGE_LOG: Path = CONFIG_DIR.resolve("last_telegram_message.txt")
+
+        // Get attachments directory dynamically based on current working directory
+        private fun getAttachmentsDir(): Path {
+            val cwd = Paths.get("").toAbsolutePath()
+            return cwd.resolve(".shellbot").resolve("attachments")
+        }
 
         private const val DEFAULT_IDLE_NOTIFY_SECONDS = 30L
 
@@ -72,6 +81,27 @@ class TelegramBot(
             } catch (_: Exception) {}
             log.info("Idle notify timeout: {}s (default)", DEFAULT_IDLE_NOTIFY_SECONDS)
             return DEFAULT_IDLE_NOTIFY_SECONDS
+        }
+
+        private fun logLastTelegramMessage(chatId: Long, message: String) {
+            try {
+                CONFIG_DIR.toFile().mkdirs()
+                val timestamp = java.time.Instant.now().toString()
+                val logEntry = """
+                    |=== Telegram Message Sent ===
+                    |Time: $timestamp
+                    |Chat ID: $chatId
+                    |Message length: ${message.length} chars
+                    |Message preview: ${message.take(100)}${if (message.length > 100) "..." else ""}
+                    |Full message:
+                    |$message
+                    |
+                    """.trimMargin()
+                LAST_MESSAGE_LOG.toFile().writeText(logEntry)
+                log.debug("Logged last Telegram message to: {}", LAST_MESSAGE_LOG)
+            } catch (e: Exception) {
+                log.warn("Failed to log last Telegram message", e)
+            }
         }
     }
 
@@ -113,13 +143,35 @@ class TelegramBot(
                 val updates = api.getUpdates(offset)
                 for (update in updates) {
                     offset = update.updateId + 1
-                    val text = update.text ?: continue
-                    handleMessage(update.chatId, text)
+                    handleUpdate(update)
                 }
             } catch (e: Exception) {
                 log.error("Polling error", e)
                 Thread.sleep(3000)
             }
+        }
+    }
+
+    private fun handleUpdate(update: TelegramApi.Update) {
+        val chatId = update.chatId
+
+        // Debug: log what we received
+        log.debug("Received update: chatId={}, text={}, photo={}, document={}, audio={}, voice={}",
+            chatId, update.text != null, update.photo != null, update.document != null, update.audio != null, update.voice != null)
+
+        // Handle attachments first if present
+        if (update.photo != null || update.document != null || update.audio != null || update.voice != null) {
+            log.info("Handling attachment for chatId: {}", chatId)
+            handleAttachment(chatId, update)
+        }
+
+        // Then handle text if present
+        val text = update.text
+        if (text != null) {
+            handleMessage(chatId, text)
+        } else if (update.photo == null && update.document == null && update.audio == null && update.voice == null) {
+            // If no text and no attachments, ignore the update
+            return
         }
     }
 
@@ -159,6 +211,223 @@ class TelegramBot(
         |Any other text is forwarded as input.
     """.trimMargin()
 
+    private fun handleAttachment(chatId: Long, update: TelegramApi.Update) {
+        log.info("Handling attachment for chatId: {}, photo={}, document={}, audio={}, voice={}",
+            chatId, update.photo != null, update.document != null, update.audio != null, update.voice != null)
+
+        // Check authorization
+        if (ownerChatId == null) {
+            log.warn("Bot not claimed yet")
+            api.sendMessage(chatId, "Bot not claimed yet. Send /start first.")
+            return
+        }
+        if (chatId != ownerChatId) {
+            log.warn("Unauthorized access attempt from chatId: {}", chatId)
+            api.sendMessage(chatId, "Unauthorized. This bot is locked to another user.")
+            return
+        }
+
+        // Create attachments directory if it doesn't exist
+        val attachmentsDir = getAttachmentsDir()
+        try {
+            attachmentsDir.toFile().mkdirs()
+        } catch (e: Exception) {
+            log.error("Failed to create attachments directory", e)
+            api.sendMessage(chatId, "Failed to create attachments directory: ${e.message}")
+            return
+        }
+
+        // Handle photos
+        if (update.photo != null && update.photo.isNotEmpty()) {
+            // Telegram sends multiple sizes, get the largest one (usually last)
+            val largestPhoto = update.photo.last()
+            val fileData = api.downloadFile(largestPhoto.fileId)
+            if (fileData != null) {
+                val timestamp = System.currentTimeMillis()
+                val fileName = "photo_${timestamp}_${largestPhoto.fileUniqueId}.jpg"
+                val filePath = attachmentsDir.resolve(fileName)
+                try {
+                    filePath.toFile().writeBytes(fileData)
+                    log.info("Saved image: {}", filePath)
+
+                    // Check if we have a plugin that can process audio
+                    val command = plugin?.processImage(filePath.toFile().absolutePath)
+                    if (command == null) {
+                        log.warn("No plugin available to process images")
+                        api.sendMessage(chatId, "No plugin available to process images.")
+                        return
+                    }
+                    log.info("Image processing command from plugin: {}", command)
+                    if (isTmuxMode) {
+                        if (!isTmuxAlive()) {
+                            log.warn("Tmux session is not running")
+                            api.sendMessage(chatId, "Tmux session is not running. Cannot process image.")
+                            return
+                        }
+                        log.info("Sending image command to tmux: {}", command)
+                        tmuxSendKeys(command)
+                        tmuxSendEnter()
+                        log.info("Image command sent to tmux")
+                    } else {
+                        val s = session
+                        if (s == null || !s.isAlive()) {
+                            log.warn("No running process")
+                            api.sendMessage(chatId, "No running process. Cannot process image.")
+                            return
+                        }
+                        log.info("Sending image command to process: {}", command)
+                        s.sendInput(command)
+                        log.info("Image command sent to process")
+                    }
+                } catch (e: Exception) {
+                    log.error("Failed to save photo", e)
+                    api.sendMessage(chatId, "Failed to save photo: ${e.message}")
+                }
+            } else {
+                api.sendMessage(chatId, "Failed to download photo")
+            }
+        }
+
+        // Handle documents
+        if (update.document != null) {
+            val document = update.document
+            val fileData = api.downloadFile(document.fileId)
+            if (fileData != null) {
+                val timestamp = System.currentTimeMillis()
+                val fileName = document.fileName ?: "document_${timestamp}_${document.fileUniqueId}"
+                val filePath = attachmentsDir.resolve(fileName)
+                try {
+                    filePath.toFile().writeBytes(fileData)
+                    api.sendMessage(chatId, "File saved: $fileName")
+                    log.info("Saved document: {}", filePath)
+
+                    // Check if it's an audio file and process it
+                    if (isAudioFile(fileName, document.mimeType)) {
+                        processAudioFile(chatId, filePath.toFile().absolutePath)
+                    }
+                } catch (e: Exception) {
+                    log.error("Failed to save document", e)
+                    api.sendMessage(chatId, "Failed to save file: ${e.message}")
+                }
+            } else {
+                api.sendMessage(chatId, "Failed to download file")
+            }
+        }
+
+        // Handle audio files
+        if (update.audio != null) {
+            log.info("Processing audio attachment")
+            val audio = update.audio
+            log.debug("Audio details: fileId={}, fileName={}, mimeType={}, fileSize={}",
+                audio.fileId, audio.fileName, audio.mimeType, audio.fileSize)
+
+            val fileData = api.downloadFile(audio.fileId)
+            if (fileData != null) {
+                log.debug("Downloaded audio file, size: {} bytes", fileData.size)
+                val timestamp = System.currentTimeMillis()
+                val fileName = audio.fileName ?: "audio_${timestamp}_${audio.fileUniqueId}.mp3"
+                val filePath = attachmentsDir.resolve(fileName)
+                try {
+                    filePath.toFile().writeBytes(fileData)
+                    api.sendMessage(chatId, "Audio saved: $fileName")
+                    log.info("Saved audio: {}", filePath)
+
+                    // Process the audio file
+                    processAudioFile(chatId, filePath.toFile().absolutePath)
+                } catch (e: Exception) {
+                    log.error("Failed to save audio", e)
+                    api.sendMessage(chatId, "Failed to save audio: ${e.message}")
+                }
+            } else {
+                log.error("Failed to download audio file")
+                api.sendMessage(chatId, "Failed to download audio")
+            }
+        }
+
+        // Handle voice messages (voice notes)
+        if (update.voice != null) {
+            log.info("Processing voice attachment")
+            val voice = update.voice
+            log.debug("Voice details: fileId={}, duration={}, mimeType={}, fileSize={}",
+                voice.fileId, voice.duration, voice.mimeType, voice.fileSize)
+
+            val fileData = api.downloadFile(voice.fileId)
+            if (fileData != null) {
+                log.debug("Downloaded voice file, size: {} bytes", fileData.size)
+                val timestamp = System.currentTimeMillis()
+                val fileName = "voice_${timestamp}_${voice.fileUniqueId}.ogg"  // Voice notes are usually OGG
+                val filePath = attachmentsDir.resolve(fileName)
+                try {
+                    filePath.toFile().writeBytes(fileData)
+                    log.info("Saved voice: {}", filePath)
+
+                    // Process the voice file as audio
+                    processAudioFile(chatId, filePath.toFile().absolutePath)
+                } catch (e: Exception) {
+                    log.error("Failed to save voice", e)
+                    api.sendMessage(chatId, "Failed to save voice: ${e.message}")
+                }
+            } else {
+                log.error("Failed to download voice file")
+                api.sendMessage(chatId, "Failed to download voice")
+            }
+        }
+    }
+
+    private fun isAudioFile(fileName: String, mimeType: String?): Boolean {
+        val lowerName = fileName.lowercase()
+        val audioExtensions = setOf(".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac", ".opus", ".webm")
+        val audioMimeTypes = setOf("audio/", "audio/mpeg", "audio/wav", "audio/ogg", "audio/mp4", "audio/aac", "audio/flac", "audio/webm")
+
+        // Check by file extension
+        if (audioExtensions.any { lowerName.endsWith(it) }) {
+            return true
+        }
+
+        // Check by MIME type
+        if (mimeType != null && audioMimeTypes.any { mimeType.startsWith(it) }) {
+            return true
+        }
+
+        return false
+    }
+
+    private fun processAudioFile(chatId: Long, filePath: String) {
+        log.info("Processing audio file: {}", filePath)
+
+        // Check if we have a plugin that can process audio
+        val command = plugin?.processAudio(filePath)
+        if (command == null) {
+            log.warn("No plugin available to process audio files")
+            api.sendMessage(chatId, "No plugin available to process audio files.")
+            return
+        }
+
+        log.info("Audio processing command from plugin: {}", command)
+
+        if (isTmuxMode) {
+            if (!isTmuxAlive()) {
+                log.warn("Tmux session is not running")
+                api.sendMessage(chatId, "Tmux session is not running. Cannot process audio.")
+                return
+            }
+            log.info("Sending audio command to tmux: {}", command)
+            tmuxSendKeys(command)
+            tmuxSendEnter()
+            log.info("Audio command sent to tmux")
+        } else {
+            val s = session
+            if (s == null || !s.isAlive()) {
+                log.warn("No running process")
+                api.sendMessage(chatId, "No running process. Cannot process audio.")
+                return
+            }
+            log.info("Sending audio command to process: {}", command)
+            s.sendInput(command)
+            log.info("Audio command sent to process")
+        }
+    }
+
     private fun handleStart(chatId: Long) {
         if (ownerChatId == null) {
             ownerChatId = chatId
@@ -190,6 +459,13 @@ class TelegramBot(
             lastSentMessageId = null
             idleNotificationSent = false
             generalIdleNotificationSent = false
+            // Delete idle message when user sends input
+            val owner = ownerChatId
+            val previousIdleMessageId = lastIdleMessageId
+            if (owner != null && previousIdleMessageId != null) {
+                api.deleteMessage(owner, previousIdleMessageId)
+                lastIdleMessageId = null
+            }
             plugin?.onUserInput()
         } else {
             val s = session
@@ -202,6 +478,13 @@ class TelegramBot(
             lastSentMessageId = null
             idleNotificationSent = false
             generalIdleNotificationSent = false
+            // Delete idle message when user sends input
+            val owner = ownerChatId
+            val previousIdleMessageId = lastIdleMessageId
+            if (owner != null && previousIdleMessageId != null) {
+                api.deleteMessage(owner, previousIdleMessageId)
+                lastIdleMessageId = null
+            }
         }
     }
 
@@ -217,6 +500,13 @@ class TelegramBot(
             lastSentMessageId = null
             idleNotificationSent = false
             generalIdleNotificationSent = false
+            // Delete idle message when user sends input
+            val owner = ownerChatId
+            val previousIdleMessageId = lastIdleMessageId
+            if (owner != null && previousIdleMessageId != null) {
+                api.deleteMessage(owner, previousIdleMessageId)
+                lastIdleMessageId = null
+            }
             plugin?.onUserInput()
         } else {
             val s = session
@@ -229,6 +519,13 @@ class TelegramBot(
             lastSentMessageId = null
             idleNotificationSent = false
             generalIdleNotificationSent = false
+            // Delete idle message when user sends input
+            val owner = ownerChatId
+            val previousIdleMessageId = lastIdleMessageId
+            if (owner != null && previousIdleMessageId != null) {
+                api.deleteMessage(owner, previousIdleMessageId)
+                lastIdleMessageId = null
+            }
         }
     }
 
@@ -344,8 +641,14 @@ class TelegramBot(
                             lastChangeTime = System.currentTimeMillis()
                             lastLogTime = System.currentTimeMillis()
                             idleNotificationSent = false
-            generalIdleNotificationSent = false
                             generalIdleNotificationSent = false
+                            // Delete previous idle message when new content arrives
+                            val idleMessageOwner = ownerChatId
+                            val previousIdleMessageId = lastIdleMessageId
+                            if (idleMessageOwner != null && previousIdleMessageId != null) {
+                                api.deleteMessage(idleMessageOwner, previousIdleMessageId)
+                                lastIdleMessageId = null
+                            }
                             lastContent = content
 
                             // Only send to Telegram if we have an owner
@@ -355,10 +658,12 @@ class TelegramBot(
                                 val edited = api.editMessageText(owner, existingId, content)
                                 if (!edited) {
                                     val newId = api.sendMessage(owner, content)
+                                    logLastTelegramMessage(owner, content)
                                     if (newId != null) lastSentMessageId = newId
                                 }
                             } else {
                                 val newId = api.sendMessage(owner, content)
+                                logLastTelegramMessage(owner, content)
                                 if (newId != null) lastSentMessageId = newId
                             }
                             lastSentContent = content
@@ -373,10 +678,18 @@ class TelegramBot(
                                     // Send Telegram notification about inactivity (only once per inactivity period)
                                     val owner = ownerChatId
                                     if (owner != null && !generalIdleNotificationSent) {
+                                        // Delete previous idle message if exists
+                                        val previousIdleMessageId = lastIdleMessageId
+                                        if (previousIdleMessageId != null) {
+                                            // Try to delete the old idle message
+                                            api.deleteMessage(owner, previousIdleMessageId)
+                                        }
+
+                                        // Send new idle message (don't update lastSentMessageId/content)
                                         val messageId = api.sendMessage(owner, "Session inactive: input needed!")
+                                        logLastTelegramMessage(owner, "Session inactive: input needed!")
                                         if (messageId != null) {
-                                            lastSentMessageId = messageId
-                                            lastSentContent = "Session inactive: input needed!"
+                                            lastIdleMessageId = messageId
                                         }
                                         generalIdleNotificationSent = true
                                     }
@@ -389,6 +702,7 @@ class TelegramBot(
                                     for (msg in notifications) {
                                         val owner = ownerChatId ?: continue
                                         api.sendMessage(owner, msg)
+                                        logLastTelegramMessage(owner, msg)
                                     }
                                     if (notifications.isNotEmpty()) {
                                         idleNotificationSent = true

@@ -13,6 +13,8 @@ interface SessionPlugin {
     fun checkForNotifications(currentOutput: String, idleSeconds: Long = 0): List<String>
     fun filterOutput(rawOutput: String): List<String>
     fun onUserInput() {}
+    fun processImage(filePath: String): String? = null
+    fun processAudio(filePath: String): String? = null
 
     companion object {
         const val NOTIFICATION_IDLE = "Claude is idle — waiting for input."

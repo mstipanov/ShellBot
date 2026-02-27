@@ -21,7 +21,46 @@ class TelegramApi(private val token: String) {
     data class Update(
         val updateId: Long,
         val chatId: Long,
-        val text: String?
+        val text: String?,
+        val photo: List<PhotoSize>? = null,
+        val document: Document? = null,
+        val audio: Audio? = null,
+        val voice: Voice? = null
+    )
+
+    data class PhotoSize(
+        val fileId: String,
+        val fileUniqueId: String,
+        val width: Int,
+        val height: Int,
+        val fileSize: Int? = null
+    )
+
+    data class Document(
+        val fileId: String,
+        val fileUniqueId: String,
+        val fileName: String? = null,
+        val mimeType: String? = null,
+        val fileSize: Int? = null
+    )
+
+    data class Audio(
+        val fileId: String,
+        val fileUniqueId: String,
+        val duration: Int? = null,
+        val performer: String? = null,
+        val title: String? = null,
+        val fileName: String? = null,
+        val mimeType: String? = null,
+        val fileSize: Int? = null
+    )
+
+    data class Voice(
+        val fileId: String,
+        val fileUniqueId: String,
+        val duration: Int? = null,
+        val mimeType: String? = null,
+        val fileSize: Int? = null
     )
 
     fun getUpdates(offset: Long, timeout: Int = 30): List<Update> {
@@ -45,7 +84,62 @@ class TelegramApi(private val token: String) {
             val chat = message.getJSONObject("chat")
             val chatId = chat.getLong("id")
             val text = message.optString("text", null)
-            Update(updateId, chatId, text)
+
+            // Parse photo attachments
+            val photoArray = message.optJSONArray("photo")
+            val photos = if (photoArray != null) {
+                (0 until photoArray.length()).map { j ->
+                    val photo = photoArray.getJSONObject(j)
+                    PhotoSize(
+                        fileId = photo.getString("file_id"),
+                        fileUniqueId = photo.getString("file_unique_id"),
+                        width = photo.getInt("width"),
+                        height = photo.getInt("height"),
+                        fileSize = photo.optInt("file_size").takeIf { it > 0 }
+                    )
+                }
+            } else null
+
+            // Parse document attachments
+            val documentObj = message.optJSONObject("document")
+            val document = if (documentObj != null) {
+                Document(
+                    fileId = documentObj.getString("file_id"),
+                    fileUniqueId = documentObj.getString("file_unique_id"),
+                    fileName = documentObj.optString("file_name", null).takeIf { it.isNotEmpty() },
+                    mimeType = documentObj.optString("mime_type", null).takeIf { it.isNotEmpty() },
+                    fileSize = documentObj.optInt("file_size").takeIf { it > 0 }
+                )
+            } else null
+
+            // Parse audio attachments
+            val audioObj = message.optJSONObject("audio")
+            val audio = if (audioObj != null) {
+                Audio(
+                    fileId = audioObj.getString("file_id"),
+                    fileUniqueId = audioObj.getString("file_unique_id"),
+                    duration = audioObj.optInt("duration").takeIf { it > 0 },
+                    performer = audioObj.optString("performer", null).takeIf { it.isNotEmpty() },
+                    title = audioObj.optString("title", null).takeIf { it.isNotEmpty() },
+                    fileName = audioObj.optString("file_name", null).takeIf { it.isNotEmpty() },
+                    mimeType = audioObj.optString("mime_type", null).takeIf { it.isNotEmpty() },
+                    fileSize = audioObj.optInt("file_size").takeIf { it > 0 }
+                )
+            } else null
+
+            // Parse voice attachments (voice notes)
+            val voiceObj = message.optJSONObject("voice")
+            val voice = if (voiceObj != null) {
+                Voice(
+                    fileId = voiceObj.getString("file_id"),
+                    fileUniqueId = voiceObj.getString("file_unique_id"),
+                    duration = voiceObj.optInt("duration").takeIf { it > 0 },
+                    mimeType = voiceObj.optString("mime_type", null).takeIf { it.isNotEmpty() },
+                    fileSize = voiceObj.optInt("file_size").takeIf { it > 0 }
+                )
+            } else null
+
+            Update(updateId, chatId, text, photos, document, audio, voice)
         }
     }
 
@@ -104,6 +198,77 @@ class TelegramApi(private val token: String) {
         } catch (e: Exception) {
             log.error("[editMessageText] exception", e)
             false
+        }
+    }
+
+    fun deleteMessage(chatId: Long, messageId: Long): Boolean {
+        val body = JSONObject()
+        body.put("chat_id", chatId)
+        body.put("message_id", messageId)
+
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create("$baseUrl/deleteMessage"))
+            .timeout(Duration.ofSeconds(10))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+            .build()
+
+        return try {
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            val json = JSONObject(response.body())
+            val ok = json.getBoolean("ok")
+            if (ok) {
+                log.debug("[deleteMessage] chatId={}, messageId={}", chatId, messageId)
+            } else {
+                log.warn("[deleteMessage] API returned ok=false: {}", response.body())
+            }
+            ok
+        } catch (e: Exception) {
+            log.error("[deleteMessage] exception", e)
+            false
+        }
+    }
+
+    /**
+     * Download a file from Telegram by file ID.
+     * Returns the file contents as ByteArray, or null if download fails.
+     */
+    fun downloadFile(fileId: String): ByteArray? {
+        // First get the file path using getFile API
+        val getFileBody = JSONObject()
+        getFileBody.put("file_id", fileId)
+
+        val getFileRequest = HttpRequest.newBuilder()
+            .uri(URI.create("$baseUrl/getFile"))
+            .timeout(Duration.ofSeconds(10))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(getFileBody.toString()))
+            .build()
+
+        return try {
+            val response = client.send(getFileRequest, HttpResponse.BodyHandlers.ofString())
+            val json = JSONObject(response.body())
+            if (!json.getBoolean("ok")) {
+                log.warn("[downloadFile] getFile API returned ok=false: {}", response.body())
+                return null
+            }
+
+            val result = json.getJSONObject("result")
+            val filePath = result.getString("file_path")
+
+            // Now download the actual file
+            val fileUrl = "https://api.telegram.org/file/bot$token/$filePath"
+            val fileRequest = HttpRequest.newBuilder()
+                .uri(URI.create(fileUrl))
+                .timeout(Duration.ofSeconds(30))
+                .GET()
+                .build()
+
+            val fileResponse = client.send(fileRequest, HttpResponse.BodyHandlers.ofByteArray())
+            fileResponse.body()
+        } catch (e: Exception) {
+            log.error("[downloadFile] exception", e)
+            null
         }
     }
 }

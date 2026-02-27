@@ -22,11 +22,23 @@ class ClaudePlugin : SessionPlugin {
 
     override fun matches(command: String): Boolean {
         val cmd = command.trim().lowercase()
-        return cmd == "claude" || cmd.startsWith("claude ")
+        return cmd.startsWith("claude")
     }
 
     override fun onUserInput() {
         state.set(ClaudeState.WORKING)
+    }
+
+    override fun processImage(filePath: String): String? {
+        // For testing: just send a simple command that Claude will see
+        // This should appear in Claude's terminal
+        return "Process this image $filePath"
+    }
+
+    override fun processAudio(filePath: String): String? {
+        // For testing: just send a simple command that Claude will see
+        // This should appear in Claude's terminal
+        return "Process this audio message $filePath"
     }
 
     override fun checkForNotifications(currentOutput: String, idleSeconds: Long): List<String> {
@@ -83,12 +95,10 @@ class ClaudePlugin : SessionPlugin {
         val stripped = stripAnsi(rawOutput)
         return stripped.lines()
             .map { it.trimEnd() }
-            .filter { line -> !isBoxDrawing(line) }
-            .filter { line -> !isStatusBar(line) }
-            .filter { line -> !isInputPrompt(line) }
             .dropLastWhile { it.isBlank() }
+            .dropLast(4)
             .takeLast(10)
-    }
+   }
 
     // ---- State detection ----
 
@@ -113,29 +123,18 @@ class ClaudePlugin : SessionPlugin {
     }
 
     private fun isInputPrompt(line: String): Boolean {
-        // Match various prompt characters Claude Code may use, with optional leading whitespace
-        return line.matches(Regex("^\\s*[>❯⏵❱▶►⟩»›\\$]\\s*$"))
-    }
+        // Match lines that consist ONLY of a prompt character (with optional whitespace)
+        // This catches "❯" or ">" alone
+        if (line.matches(Regex("^\\s*[>❯⏵❱▶►⟩»›\\$]\\s*$"))) {
+            return true
+        }
 
-    // ---- Output filtering ----
-
-    private fun isBoxDrawing(line: String): Boolean {
-        if (line.isBlank()) return false
-        val stripped = line.replace(" ", "")
-        if (stripped.isEmpty()) return false
-        return stripped.all { ch -> ch.code in 0x2500..0x257F || ch == '─' || ch == '│' || ch == '╭' || ch == '╰' || ch == '╮' || ch == '╯' }
-    }
-
-    private fun isStatusBar(line: String): Boolean {
-        val lower = line.lowercase()
-        return lower.contains("tokens:") ||
-                lower.contains("cost:") ||
-                lower.contains("mode:") ||
-                lower.contains("context window")
+        // Also match lines that START with a prompt character followed by text
+        // This catches "❯ upload the sketch and test the stream"
+        return line.matches(Regex("^\\s*[>❯⏵❱▶►⟩»›\\$]\\s+.*"))
     }
 
     // ---- Utilities ----
-
     private fun stripAnsi(text: String): String {
         return text
             .replace(Regex("\u001B\\[[0-9;]*[a-zA-Z]"), "")       // CSI sequences
