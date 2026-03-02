@@ -50,17 +50,30 @@ This builds the project, copies the JAR to `~/bin/shellbot.jar`, and creates a `
 
 ## Configuration
 
-Provide your Telegram bot token via either:
+All configuration lives in `~/.shellbot/settings.yaml`. On first run for a new session, ShellBot will interactively ask whether you want Telegram integration and prompt for the bot token.
 
-- Environment variable: `export TELEGRAM_BOT_TOKEN=<your-token>`
-- File: `~/.shellbot/telegram.token`
+Example `settings.yaml`:
 
-Optional settings in `~/.shellbot/config.properties`:
-
-```properties
-# Seconds of idle output before sending a notification (default: 30)
-idle.notify.seconds=30
+```yaml
+sessions:
+  shellbot:
+    telegram:
+      enabled: true
+      token: "123456:ABC-DEF..."
+      idleNotifySeconds: 30
+  shellbot-2:
+    telegram:
+      enabled: true
+      token: "789012:GHI-JKL..."
+      idleNotifySeconds: 60
+  shellbot-3:
+    telegram:
+      enabled: false
+      token: ""
+      idleNotifySeconds: 30
 ```
+
+Each session has its own Telegram config. Sessions with `enabled: false` won't start a Telegram bot. If you already have a legacy `~/.shellbot/telegram.token` or `config.properties`, they will be automatically migrated to `settings.yaml` on first run.
 
 ## Usage
 
@@ -73,13 +86,24 @@ shellbot -c "python3 train.py"
 
 # Verbose mode
 shellbot -c "claude" -v
-
-# Use a different session ID (for testing)
-shellbot -c "claude" -s "shellbot-test"
-
-# Disable Telegram integration
-shellbot -c "claude" -nt
 ```
+
+### Multiple Sessions
+
+You can run multiple ShellBot sessions in parallel, each with its own tmux session and (optionally) its own Telegram bot:
+
+```bash
+# Terminal 1: default session
+shellbot -c "claude --continue"
+
+# Terminal 2: second session with a different ID
+shellbot -c "claude --continue" -s "shellbot-2"
+
+# Terminal 3: a third session
+shellbot -c "claude --continue" -s "shellbot-3"
+```
+
+Each session gets its own Telegram config. On first run for a new session ID, ShellBot will ask whether to enable Telegram and prompt for the token.
 
 ShellBot attaches you to the tmux session -- you interact with Claude Code normally in your terminal. The Telegram bot runs in the background.
 
@@ -108,7 +132,7 @@ Send `/start` to your bot to claim ownership (first user only). Then:
 ## Notifications
 
 ### For All Sessions
-- **Session inactive** -- After 30 seconds of no new output (configurable), sends "Session inactive: input needed!" notification
+- **Session inactive** -- After `idleNotifySeconds` of no new output (default: 30, configurable per session), sends "Session inactive: input needed!" notification
 
 ### Claude Code Specific (via ClaudePlugin)
 When running `claude`, the ClaudePlugin automatically detects state changes and notifies you:
@@ -134,6 +158,7 @@ The install script's wrapper supports automatic restart. If the wrapped process 
 ```
 src/main/kotlin/com/shellbot/
 ├── Main.kt                    # Entry point, CLI parsing
+├── Settings.kt                # YAML config loading, migration, interactive setup
 ├── TmuxSession.kt             # Core: tmux lifecycle, daemons, Telegram setup
 ├── ShellBot.kt                # Fallback when tmux is unavailable
 ├── plugin/

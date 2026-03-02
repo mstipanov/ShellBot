@@ -27,10 +27,10 @@ import java.nio.file.Paths
 class TelegramBot(
     private val token: String,
     private val tmuxSessionName: String? = null,
-    private val plugin: SessionPlugin? = null
+    private val plugin: SessionPlugin? = null,
+    private val idleNotifySeconds: Long = 30
 ) {
     private val api = TelegramApi(token)
-    private val idleNotifySeconds: Long = loadIdleNotifySeconds()
     private var session: ProcessSession? = null
     private var offset = 0L
     @Volatile
@@ -47,40 +47,18 @@ class TelegramBot(
     private var generalIdleNotificationSent = false
 
     private val isTmuxMode get() = tmuxSessionName != null
+    private val tmuxTarget get() = "=$tmuxSessionName"  // '=' prefix forces exact tmux match
 
     companion object {
         private val log = LoggerFactory.getLogger(TelegramBot::class.java)
         private val CONFIG_DIR: Path = Paths.get(System.getProperty("user.home"), ".shellbot")
         private val OWNER_FILE: Path = CONFIG_DIR.resolve("owner.txt")
-        private val CONFIG_FILE: Path = CONFIG_DIR.resolve("config.properties")
         private val LAST_MESSAGE_LOG: Path = CONFIG_DIR.resolve("last_telegram_message.txt")
 
         // Get attachments directory dynamically based on current working directory
         private fun getAttachmentsDir(): Path {
             val cwd = Paths.get("").toAbsolutePath()
             return cwd.resolve(".shellbot").resolve("attachments")
-        }
-
-        private const val DEFAULT_IDLE_NOTIFY_SECONDS = 30L
-
-        private fun loadIdleNotifySeconds(): Long {
-            try {
-                val file = CONFIG_FILE.toFile()
-                if (file.exists()) {
-                    val props = java.util.Properties()
-                    file.inputStream().use { props.load(it) }
-                    val value = props.getProperty("idle.notify.seconds")
-                    if (value != null) {
-                        val parsed = value.trim().toLongOrNull()
-                        if (parsed != null && parsed > 0) {
-                            log.info("Idle notify timeout: {}s (from config)", parsed)
-                            return parsed
-                        }
-                    }
-                }
-            } catch (_: Exception) {}
-            log.info("Idle notify timeout: {}s (default)", DEFAULT_IDLE_NOTIFY_SECONDS)
-            return DEFAULT_IDLE_NOTIFY_SECONDS
         }
 
         private fun logLastTelegramMessage(chatId: Long, message: String) {
@@ -577,7 +555,7 @@ class TelegramBot(
                 return
             }
             // Send Ctrl-C to interrupt the running process
-            tmuxExec("send-keys", "-t", tmuxSessionName!!, "C-c")
+            tmuxExec("send-keys", "-t", tmuxTarget, "C-c")
             api.sendMessage(chatId, "Sent Ctrl-C.")
         } else {
             val s = session
@@ -721,20 +699,20 @@ class TelegramBot(
     // --- Tmux helpers ---
 
     private fun isTmuxAlive(): Boolean {
-        return tmuxExec("has-session", "-t", tmuxSessionName!!) == 0
+        return tmuxExec("has-session", "-t", tmuxTarget) == 0
     }
 
     private fun tmuxSendKeys(text: String) {
-        tmuxExec("send-keys", "-t", tmuxSessionName!!, "-l", text)
+        tmuxExec("send-keys", "-t", tmuxTarget, "-l", text)
     }
 
     private fun tmuxSendEnter() {
-        tmuxExec("send-keys", "-t", tmuxSessionName!!, "Enter")
+        tmuxExec("send-keys", "-t", tmuxTarget, "Enter")
     }
 
     private fun tmuxCapturePane(): String {
         return try {
-            val pb = ProcessBuilder("tmux", "capture-pane", "-t", tmuxSessionName!!, "-p")
+            val pb = ProcessBuilder("tmux", "capture-pane", "-t", tmuxTarget, "-p")
             pb.redirectErrorStream(true)
             val p = pb.start()
             val output = p.inputStream.bufferedReader().readText()

@@ -12,19 +12,19 @@ import java.nio.file.Paths
  * Side-channels (all optional, run as daemon threads):
  *   - ~/.shellbot/output.txt — last 10 lines of visible pane output
  *   - ~/.shellbot/input.txt  — write text here to inject it as keyboard input
- *   - Telegram bot            — if a token is found, provides remote /output and input
+ *   - Telegram bot            — configured via ~/.shellbot/settings.yaml
  *
  * tmux owns the PTY, so the child process (claude, etc.) gets a real terminal.
  */
-class TmuxSession(private val command: String, private val noTelegram: Boolean = false, private val sessionId: String = "shellbot") {
+class TmuxSession(private val command: String, private val sessionId: String = "shellbot", private val settings: Settings = Settings()) {
     private val log = LoggerFactory.getLogger(TmuxSession::class.java)
 
     companion object {
         private val CONFIG_DIR = Paths.get(System.getProperty("user.home"), ".shellbot").toFile()
-        private val TOKEN_FILE = File(CONFIG_DIR, "telegram.token")
     }
 
     private val SESSION_NAME = sessionId
+    private val SESSION_TARGET = "=$sessionId"  // '=' prefix forces exact tmux match
     private val INPUT_FILE = File(CONFIG_DIR, "input-$sessionId.txt")
     private val OUTPUT_FILE = File(CONFIG_DIR, "output-$sessionId.txt")
 
@@ -40,7 +40,7 @@ class TmuxSession(private val command: String, private val noTelegram: Boolean =
         OUTPUT_FILE.writeText("")
 
         // Kill any leftover session from a previous run
-        exec("tmux", "kill-session", "-t", SESSION_NAME)
+        exec("tmux", "kill-session", "-t", SESSION_TARGET)
 
         // Start detached tmux session running the command, atomically setting
         // "remain-on-exit" so the pane survives even if the command exits instantly.
@@ -52,7 +52,8 @@ class TmuxSession(private val command: String, private val noTelegram: Boolean =
             ";", "set-option", "-t", SESSION_NAME, "mouse", "on",
             ";", "set-option", "-t", SESSION_NAME, "history-limit", "5000",
             ";", "set-option", "-t", SESSION_NAME, "status-position", "top",
-            ";", "set-option", "-t", SESSION_NAME, "status-interval", "1"
+            ";", "set-option", "-t", SESSION_NAME, "status-interval", "1",
+            ";", "set-option", "-t", SESSION_NAME, "status-left-length", "30"
         )
         if (startResult != 0) {
             log.error("Failed to create tmux session (is tmux installed?)")
@@ -69,7 +70,7 @@ class TmuxSession(private val command: String, private val noTelegram: Boolean =
             if (output.isNotBlank()) {
                 println(output)
             }
-            exec("tmux", "kill-session", "-t", SESSION_NAME)
+            exec("tmux", "kill-session", "-t", SESSION_TARGET)
             return 0
         }
 
@@ -83,8 +84,8 @@ class TmuxSession(private val command: String, private val noTelegram: Boolean =
                         INPUT_FILE.writeText("")
                         for (line in text.lines()) {
                             if (line.isNotEmpty()) {
-                                exec("tmux", "send-keys", "-t", SESSION_NAME, "-l", line)
-                                exec("tmux", "send-keys", "-t", SESSION_NAME, "Enter")
+                                exec("tmux", "send-keys", "-t", SESSION_TARGET, "-l", line)
+                                exec("tmux", "send-keys", "-t", SESSION_TARGET, "Enter")
                             }
                         }
                     }
@@ -103,7 +104,7 @@ class TmuxSession(private val command: String, private val noTelegram: Boolean =
             while (isTmuxSessionAlive()) {
                 Thread.sleep(500)
                 try {
-                    val pb = ProcessBuilder("tmux", "capture-pane", "-t", SESSION_NAME, "-p")
+                    val pb = ProcessBuilder("tmux", "capture-pane", "-t", SESSION_TARGET, "-p")
                     pb.redirectErrorStream(true)
                     val p = pb.start()
                     val output = p.inputStream.bufferedReader().readText()
@@ -125,40 +126,49 @@ class TmuxSession(private val command: String, private val noTelegram: Boolean =
             }
         }
 
-        // Background thread: Telegram bot (if token is configured and not disabled by flag)
-        val token = loadTelegramToken()
-        if (token != null && !noTelegram) {
-            startDaemon("telegram-bot") {
-                val bot = TelegramBot(token, tmuxSessionName = SESSION_NAME, plugin = plugin)
-                bot.run()
+        // Background thread: Telegram bot (configured via settings.yaml)
+        if (settings.getSessionTelegram(sessionId)?.enabled ?: false) {
+            val telegramSettings = settings.getSessionTelegram(sessionId)
+            if (telegramSettings != null) {
+                startDaemon("telegram-bot") {
+                    val bot = TelegramBot(
+                        telegramSettings.token,
+                        tmuxSessionName = SESSION_NAME,
+                        plugin = plugin,
+                        idleNotifySeconds = telegramSettings.idleNotifySeconds
+                    )
+                    bot.run()
+                }
+            } else {
+                log.info("Telegram integration not configured for session '{}'", sessionId)
             }
-        } else if (noTelegram) {
+        } else {
             log.info("Telegram integration disabled by command-line flag")
         }
 
         // When the pane's command exits, auto-kill the session so attach returns cleanly.
-        exec("tmux", "set-hook", "-t", SESSION_NAME, "pane-died", "kill-session")
+        exec("tmux", "set-hook", "-t", SESSION_NAME, "pane-died", "kill-session -t =$SESSION_NAME")
 
         // Attach to the tmux session — this is the blocking call.
         // inheritIO() gives the user full terminal control.
-        val attachPb = ProcessBuilder("tmux", "attach", "-t", SESSION_NAME)
+        val attachPb = ProcessBuilder("tmux", "attach", "-t", SESSION_TARGET)
         attachPb.inheritIO()
         val attachProcess = attachPb.start()
         val exitCode = attachProcess.waitFor()
 
         // Clean up
-        exec("tmux", "kill-session", "-t", SESSION_NAME)
+        exec("tmux", "kill-session", "-t", SESSION_TARGET)
         return exitCode
     }
 
     private fun isTmuxSessionAlive(): Boolean {
-        return exec("tmux", "has-session", "-t", SESSION_NAME) == 0
+        return exec("tmux", "has-session", "-t", SESSION_TARGET) == 0
     }
 
     /** Returns true if the pane's process is still running (not "dead"). */
     private fun isTmuxPaneAlive(): Boolean {
         return try {
-            val pb = ProcessBuilder("tmux", "display-message", "-t", SESSION_NAME, "-p", "#{pane_dead}")
+            val pb = ProcessBuilder("tmux", "display-message", "-t", SESSION_TARGET, "-p", "#{pane_dead}")
             pb.redirectErrorStream(true)
             val p = pb.start()
             val output = p.inputStream.bufferedReader().readText().trim()
@@ -172,7 +182,7 @@ class TmuxSession(private val command: String, private val noTelegram: Boolean =
     /** Captures the full pane content including scrollback, filtering out tmux's "Pane is dead" line. */
     private fun capturePane(): String {
         return try {
-            val pb = ProcessBuilder("tmux", "capture-pane", "-t", SESSION_NAME, "-p", "-S", "-")
+            val pb = ProcessBuilder("tmux", "capture-pane", "-t", SESSION_TARGET, "-p", "-S", "-")
             pb.redirectErrorStream(true)
             val p = pb.start()
             val output = p.inputStream.bufferedReader().readText()
@@ -206,17 +216,4 @@ class TmuxSession(private val command: String, private val noTelegram: Boolean =
         thread.start()
     }
 
-    private fun loadTelegramToken(): String? {
-        val envToken = System.getenv("TELEGRAM_BOT_TOKEN")
-        if (!envToken.isNullOrBlank()) return envToken.trim()
-
-        try {
-            if (TOKEN_FILE.exists()) {
-                val token = TOKEN_FILE.readText().trim()
-                if (token.isNotBlank()) return token
-            }
-        } catch (_: Exception) {}
-
-        return null
-    }
 }

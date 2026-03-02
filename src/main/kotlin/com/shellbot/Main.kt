@@ -11,7 +11,7 @@ import kotlin.system.exitProcess
  *
  * If tmux is available, runs inside a tmux session with side-channels:
  *   - ~/.shellbot/input.txt / output.txt for file-based I/O
- *   - Telegram bot if ~/.shellbot/telegram.token or TELEGRAM_BOT_TOKEN is set
+ *   - Telegram bot if configured in ~/.shellbot/settings.yaml
  * Otherwise falls back to plain inheritIO.
  */
 object ShellBotMain {
@@ -34,13 +34,6 @@ object ShellBotMain {
             description = "Enable verbose output"
         ).default(false)
 
-        val noTelegram by parser.option(
-            ArgType.Boolean,
-            shortName = "nt",
-            fullName = "no-telegram",
-            description = "Force disable Telegram integration even if token exists"
-        ).default(false)
-
         val sessionId by parser.option(
             ArgType.String,
             shortName = "s",
@@ -55,8 +48,10 @@ object ShellBotMain {
                 log.info("ShellBot starting, command: {}", command)
             }
 
+            val settings = Settings.promptSessionSetup(sessionId)
+
             val exitCode = if (isTmuxAvailable()) {
-                TmuxSession(command, noTelegram, sessionId).run()
+                TmuxSession(command, sessionId, settings).run()
             } else {
                 ShellBot(command).run()
             }
