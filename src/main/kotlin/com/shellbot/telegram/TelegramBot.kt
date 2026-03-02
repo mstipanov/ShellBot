@@ -47,7 +47,15 @@ class TelegramBot(
     private var generalIdleNotificationSent = false
 
     private val isTmuxMode get() = tmuxSessionName != null
-    private val tmuxTarget get() = "=$tmuxSessionName"  // '=' prefix forces exact tmux match
+    private val tmuxTarget get() = if (tmuxSessionName != null) "=$tmuxSessionName" else ""  // '=' prefix for commands that support it (has-session, display-message)
+
+    init {
+        if (tmuxSessionName != null) {
+            TelegramBot.log.info("TelegramBot configured for tmux session '{}' (target: '{}')", tmuxSessionName, tmuxTarget)
+        } else {
+            TelegramBot.log.info("TelegramBot configured for standalone mode")
+        }
+    }
 
     companion object {
         private val log = LoggerFactory.getLogger(TelegramBot::class.java)
@@ -555,7 +563,7 @@ class TelegramBot(
                 return
             }
             // Send Ctrl-C to interrupt the running process
-            tmuxExec("send-keys", "-t", tmuxTarget, "C-c")
+            tmuxExec("send-keys", "-t", tmuxSessionName!!, "C-c")
             api.sendMessage(chatId, "Sent Ctrl-C.")
         } else {
             val s = session
@@ -699,26 +707,29 @@ class TelegramBot(
     // --- Tmux helpers ---
 
     private fun isTmuxAlive(): Boolean {
+        if (!isTmuxMode) return false
         return tmuxExec("has-session", "-t", tmuxTarget) == 0
     }
 
     private fun tmuxSendKeys(text: String) {
-        tmuxExec("send-keys", "-t", tmuxTarget, "-l", text)
+        tmuxExec("send-keys", "-t", tmuxSessionName!!, "-l", text)
     }
 
     private fun tmuxSendEnter() {
-        tmuxExec("send-keys", "-t", tmuxTarget, "Enter")
+        tmuxExec("send-keys", "-t", tmuxSessionName!!, "Enter")
     }
 
     private fun tmuxCapturePane(): String {
         return try {
-            val pb = ProcessBuilder("tmux", "capture-pane", "-t", tmuxTarget, "-p")
+            val pb = ProcessBuilder("tmux", "capture-pane", "-t", tmuxSessionName!!, "-p")
             pb.redirectErrorStream(true)
             val p = pb.start()
             val output = p.inputStream.bufferedReader().readText()
-            p.waitFor()
+            val exitCode = p.waitFor()
+            TelegramBot.log.debug("tmux capture-pane -t {} -p exit={}, output length={}", tmuxSessionName!!, exitCode, output.length)
             output
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            TelegramBot.log.warn("tmux capture-pane failed", e)
             ""
         }
     }

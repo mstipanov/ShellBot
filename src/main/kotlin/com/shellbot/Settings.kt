@@ -22,8 +22,11 @@ data class SessionSettings(
 data class Settings(
     val sessions: Map<String, SessionSettings> = emptyMap()
 ) {
+    private val log = LoggerFactory.getLogger(Settings::class.java)
+
     fun getSessionTelegram(sessionId: String): TelegramSettings? {
         val session = sessions[sessionId] ?: return null
+        log.info("Found session config for '{}': enabled={}, token present={}", sessionId, session.telegram.enabled, session.telegram.token.isNotBlank())
         return if (session.telegram.enabled && session.telegram.token.isNotBlank()) {
             session.telegram
         } else {

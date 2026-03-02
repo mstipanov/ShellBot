@@ -16,7 +16,11 @@ import java.nio.file.Paths
  *
  * tmux owns the PTY, so the child process (claude, etc.) gets a real terminal.
  */
-class TmuxSession(private val command: String, private val sessionId: String = "shellbot", private val settings: Settings = Settings()) {
+class TmuxSession(
+    private val command: String,
+    private val sessionId: String = "shellbot",
+    private val settings: Settings = Settings()
+) {
     private val log = LoggerFactory.getLogger(TmuxSession::class.java)
 
     companion object {
@@ -31,7 +35,10 @@ class TmuxSession(private val command: String, private val sessionId: String = "
     fun run(): Int {
         // Validate session name (tmux session names must match regex: [a-zA-Z0-9_-]+)
         if (!SESSION_NAME.matches(Regex("^[a-zA-Z0-9_-]+$"))) {
-            log.error("Invalid session name: '{}'. Session names can only contain letters, numbers, underscores and hyphens.", SESSION_NAME)
+            log.error(
+                "Invalid session name: '{}'. Session names can only contain letters, numbers, underscores and hyphens.",
+                SESSION_NAME
+            )
             return 1
         }
 
@@ -122,28 +129,26 @@ class TmuxSession(private val command: String, private val sessionId: String = "
                     if (lines.isNotEmpty()) {
                         OUTPUT_FILE.writeText(lines.joinToString("\n") + "\n")
                     }
-                } catch (_: Exception) {}
+                } catch (_: Exception) {
+                }
             }
         }
 
         // Background thread: Telegram bot (configured via settings.yaml)
-        if (settings.getSessionTelegram(sessionId)?.enabled ?: false) {
-            val telegramSettings = settings.getSessionTelegram(sessionId)
-            if (telegramSettings != null) {
-                startDaemon("telegram-bot") {
-                    val bot = TelegramBot(
-                        telegramSettings.token,
-                        tmuxSessionName = SESSION_NAME,
-                        plugin = plugin,
-                        idleNotifySeconds = telegramSettings.idleNotifySeconds
-                    )
-                    bot.run()
-                }
-            } else {
-                log.info("Telegram integration not configured for session '{}'", sessionId)
+        val telegramSettings = settings.getSessionTelegram(sessionId)
+        if (telegramSettings != null) {
+            log.info("Starting Telegram bot for session '{}'", sessionId)
+            startDaemon("telegram-bot") {
+                val bot = TelegramBot(
+                    telegramSettings.token,
+                    tmuxSessionName = SESSION_NAME,
+                    plugin = plugin,
+                    idleNotifySeconds = telegramSettings.idleNotifySeconds
+                )
+                bot.run()
             }
         } else {
-            log.info("Telegram integration disabled by command-line flag")
+            log.info("Telegram integration not configured for session '{}'", sessionId)
         }
 
         // When the pane's command exits, auto-kill the session so attach returns cleanly.
@@ -210,7 +215,10 @@ class TmuxSession(private val command: String, private val sessionId: String = "
 
     private fun startDaemon(name: String, block: () -> Unit) {
         val thread = Thread({
-            try { block() } catch (_: Exception) {}
+            try {
+                block()
+            } catch (_: Exception) {
+            }
         }, name)
         thread.isDaemon = true
         thread.start()
