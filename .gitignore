@@ -5,6 +5,7 @@
 
 /local/
 /.claude/
+/.shellbot/
 /.venv/
 /target/
 dependency-reduced-pom.xml

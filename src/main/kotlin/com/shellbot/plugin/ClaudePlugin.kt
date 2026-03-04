@@ -35,10 +35,8 @@ class ClaudePlugin : SessionPlugin {
         return "Process this image $filePath"
     }
 
-    override fun processAudio(filePath: String): String? {
-        // For testing: just send a simple command that Claude will see
-        // This should appear in Claude's terminal
-        return "Process this audio message $filePath"
+    override fun processAudio(filePath: String): String {
+        return "/transcribe $filePath"
     }
 
     override fun checkForNotifications(currentOutput: String, idleSeconds: Long): List<String> {
@@ -96,7 +94,8 @@ class ClaudePlugin : SessionPlugin {
         return stripped.lines()
             .map { it.trimEnd() }
             .dropLastWhile { it.isBlank() }
-            .dropLast(4)
+            .dropLast(5)
+            .filter { !it.startsWith("──────────────────────────────────────────────────────────") }
             .takeLast(10)
    }
 
