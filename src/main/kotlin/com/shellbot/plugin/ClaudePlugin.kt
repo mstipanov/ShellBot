@@ -36,7 +36,7 @@ class ClaudePlugin : SessionPlugin {
     }
 
     override fun processAudio(filePath: String): String {
-        return "/transcribe $filePath"
+        return "Transcribe audio file to text $filePath"
     }
 
     override fun checkForNotifications(currentOutput: String, idleSeconds: Long): List<String> {
