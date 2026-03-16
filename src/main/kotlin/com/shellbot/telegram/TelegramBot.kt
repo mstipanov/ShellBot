@@ -182,6 +182,7 @@ class TelegramBot(
             text == "/sb_kill" -> handleKill(chatId)
             text == "/sb_enter" || text == "/sb_e" -> handleEnter(chatId)
             text == "/sb_help" -> handleHelp(chatId)
+            text == "/sb_project" || text == "/sb_p" -> handleProject(chatId)
             else -> handleInput(chatId, text)
         }
     }
@@ -192,6 +193,7 @@ class TelegramBot(
         |/sb_output or /sb_o — last lines of output
         |/sb_enter or /sb_e — send Enter key
         |/sb_kill — kill/interrupt process (Ctrl-C)
+        |/sb_project or /sb_p — show current directory
         |/sb_help — show this help
         |
         |Any other text is forwarded as input.
@@ -484,6 +486,11 @@ class TelegramBot(
 
     private fun handleHelp(chatId: Long) {
         api.sendMessage(chatId, helpText)
+    }
+
+    private fun handleProject(chatId: Long) {
+        val cwd = Paths.get("").toAbsolutePath()
+        api.sendMessage(chatId, "Current directory: ${cwd}")
     }
 
     // --- Input ---

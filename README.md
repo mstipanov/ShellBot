@@ -126,6 +126,7 @@ Send `/start` to your bot to claim ownership (first user only). Then:
 | `/sb_output` or `/sb_o` | Show last lines of output |
 | `/sb_enter` or `/sb_e` | Send Enter key |
 | `/sb_kill` | Send Ctrl-C |
+| `/sb_project` or `/sb_p` | Show current directory |
 | `/sb_help` | Show help |
 | *(any text)* | Forwarded as keyboard input to the session |
 
