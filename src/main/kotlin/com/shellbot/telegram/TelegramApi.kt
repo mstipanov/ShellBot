@@ -229,6 +229,65 @@ class TelegramApi(private val token: String) {
         }
     }
 
+    fun pinMessage(chatId: Long, messageId: Long, disableNotification: Boolean = true): Boolean {
+        val body = JSONObject()
+        body.put("chat_id", chatId)
+        body.put("message_id", messageId)
+        body.put("disable_notification", disableNotification)
+
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create("$baseUrl/pinChatMessage"))
+            .timeout(Duration.ofSeconds(10))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+            .build()
+
+        return try {
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            val json = JSONObject(response.body())
+            val ok = json.getBoolean("ok")
+            if (ok) {
+                log.debug("[pinMessage] chatId={}, messageId={}", chatId, messageId)
+            } else {
+                log.warn("[pinMessage] API returned ok=false: {}", response.body())
+            }
+            ok
+        } catch (e: Exception) {
+            log.error("[pinMessage] exception", e)
+            false
+        }
+    }
+
+    fun unpinMessage(chatId: Long, messageId: Long? = null): Boolean {
+        val body = JSONObject()
+        body.put("chat_id", chatId)
+        if (messageId != null) {
+            body.put("message_id", messageId)
+        }
+
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create("$baseUrl/unpinChatMessage"))
+            .timeout(Duration.ofSeconds(10))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+            .build()
+
+        return try {
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            val json = JSONObject(response.body())
+            val ok = json.getBoolean("ok")
+            if (ok) {
+                log.debug("[unpinMessage] chatId={}, messageId={}", chatId, messageId)
+            } else {
+                log.warn("[unpinMessage] API returned ok=false: {}", response.body())
+            }
+            ok
+        } catch (e: Exception) {
+            log.error("[unpinMessage] exception", e)
+            false
+        }
+    }
+
     /**
      * Download a file from Telegram by file ID.
      * Returns the file contents as ByteArray, or null if download fails.

@@ -46,6 +46,7 @@ class TelegramBot(
     @Volatile
     private var generalIdleNotificationSent = false
 
+
     private val isTmuxMode get() = tmuxSessionName != null
     private val tmuxTarget get() = if (tmuxSessionName != null) "=$tmuxSessionName" else ""  // '=' prefix for commands that support it (has-session, display-message)
 
@@ -116,7 +117,12 @@ class TelegramBot(
     fun run() {
         loadOwner()
         log.info("Telegram bot started. Polling for updates...")
-        if (ownerChatId == null) {
+
+        // Send startup message with current project directory if owner exists
+        val owner = ownerChatId
+        if (owner != null) {
+            sendStartupProjectMessage(owner)
+        } else {
             log.info("Waiting for first user to claim the bot with /start...")
         }
 
@@ -476,7 +482,7 @@ class TelegramBot(
             saveOwner(chatId)
             log.info("Bot claimed by chat ID: {}", chatId)
             val mode = if (isTmuxMode) "tmux session" else "standalone"
-            api.sendMessage(chatId, "Bot claimed ($mode mode).\n\n$helpText")
+            sendStartupProjectMessage(chatId) // This will send and pin the combined message
         } else if (chatId == ownerChatId) {
             api.sendMessage(chatId, helpText)
         } else {
@@ -491,6 +497,22 @@ class TelegramBot(
     private fun handleProject(chatId: Long) {
         val cwd = Paths.get("").toAbsolutePath()
         api.sendMessage(chatId, "Current directory: ${cwd}")
+    }
+
+    private fun sendStartupProjectMessage(chatId: Long) {
+        // First, unpin any currently pinned message
+        api.unpinMessage(chatId, null) // null messageId unpins all messages
+
+        val cwd = Paths.get("").toAbsolutePath()
+        val mode = if (isTmuxMode) "tmux session" else "standalone"
+        val message = "🤖 ShellBot ($mode mode)\n📁 Project: $cwd"
+        val messageId = api.sendMessage(chatId, message)
+        if (messageId != null) {
+            api.pinMessage(chatId, messageId, disableNotification = true)
+            log.info("Sent and pinned startup project message to chat: $chatId (messageId: $messageId)")
+        } else {
+            log.warn("Failed to send startup project message to chat: $chatId")
+        }
     }
 
     // --- Input ---
