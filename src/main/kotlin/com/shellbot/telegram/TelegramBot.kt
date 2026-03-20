@@ -505,7 +505,7 @@ class TelegramBot(
 
         val cwd = Paths.get("").toAbsolutePath()
         val mode = if (isTmuxMode) "tmux session" else "standalone"
-        val message = "🤖 ShellBot ($mode mode)\n📁 Project: $cwd"
+        val message = "📁 $cwd\n🤖 ShellBot ($mode mode)"
         val messageId = api.sendMessage(chatId, message)
         if (messageId != null) {
             api.pinMessage(chatId, messageId, disableNotification = true)
