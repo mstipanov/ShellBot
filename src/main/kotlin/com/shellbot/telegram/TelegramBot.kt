@@ -726,7 +726,27 @@ class TelegramBot(
                         if (lines.isEmpty()) continue
                         val content = lines.joinToString("\n")
 
-                        if (content != lastContent) {
+                        // Clean the content for comparison - remove ANSI codes, normalize whitespace
+                        val cleanContent = content.replace(Regex("\\u001b\\[[;\\d]*m"), "")  // Remove ANSI color codes
+                            .replace(Regex("\\s+"), " ")  // Normalize whitespace
+                            .trim()
+
+                        val lastCleanContent = lastContent?.replace(Regex("\\u001b\\[[;\\d]*m"), "")
+                            ?.replace(Regex("\\s+"), " ")
+                            ?.trim()
+
+                        // Check if content has really changed (from user's perspective)
+                        val contentReallyChanged = cleanContent != lastCleanContent
+
+                        // If we already sent an inactivity notification and content hasn't REALLY changed,
+                        // don't send console output or reset the notification flag
+                        if (generalIdleNotificationSent && !contentReallyChanged) {
+                            // Content hasn't really changed, and we already notified about inactivity
+                            // Don't send anything, just continue
+                            continue
+                        }
+
+                        if (contentReallyChanged) {
                             lastChangeTime = System.currentTimeMillis()
                             lastLogTime = System.currentTimeMillis()
                             idleNotificationSent = false
