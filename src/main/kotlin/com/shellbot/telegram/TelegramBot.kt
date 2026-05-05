@@ -279,17 +279,19 @@ class TelegramBot(
                     // Delete idle message when user sends input
                     val owner = ownerChatId
                     val previousIdleMessageId = lastIdleMessageId
-                    val hadIdleMessage = previousIdleMessageId != null
+
                     if (owner != null && previousIdleMessageId != null) {
-                        api.deleteMessage(owner, previousIdleMessageId)
-                        lastIdleMessageId = null
+                        val deleted = api.deleteMessage(owner, previousIdleMessageId)
+                        if (deleted) {
+                            lastIdleMessageId = null
+                        } else {
+                            log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+                        }
                     }
-                    // Only clear lastSentMessageId if there was no idle message
-                    // (if idle existed, we want to update the previous session output message)
-                    if (!hadIdleMessage) {
-                        lastSentContent = null
-                        lastSentMessageId = null
-                    }
+                    // Always clear lastSentMessageId when user sends input
+                    // so that new output appears as a new message, not editing the old one
+                    lastSentContent = null
+                    lastSentMessageId = null
                     plugin?.onUserInput()
                 } catch (e: Exception) {
                     log.error("Failed to save photo", e)
@@ -322,17 +324,19 @@ class TelegramBot(
                         // Delete idle message when user sends input
                         val owner = ownerChatId
                         val previousIdleMessageId = lastIdleMessageId
-                        val hadIdleMessage = previousIdleMessageId != null
+
                         if (owner != null && previousIdleMessageId != null) {
-                            api.deleteMessage(owner, previousIdleMessageId)
-                            lastIdleMessageId = null
+                            val deleted = api.deleteMessage(owner, previousIdleMessageId)
+                            if (deleted) {
+                                lastIdleMessageId = null
+                            } else {
+                                log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+                            }
                         }
-                        // Only clear lastSentMessageId if there was no idle message
-                        // (if idle existed, we want to update the previous session output message)
-                        if (!hadIdleMessage) {
-                            lastSentContent = null
-                            lastSentMessageId = null
-                        }
+                        // Always clear lastSentMessageId when user sends input
+                        // so that new output appears as a new message, not editing the old one
+                        lastSentContent = null
+                        lastSentMessageId = null
                         plugin?.onUserInput()
                     }
                 } catch (e: Exception) {
@@ -462,17 +466,19 @@ class TelegramBot(
         // Delete idle message when user sends input
         val owner = ownerChatId
         val previousIdleMessageId = lastIdleMessageId
-        val hadIdleMessage = previousIdleMessageId != null
+
         if (owner != null && previousIdleMessageId != null) {
-            api.deleteMessage(owner, previousIdleMessageId)
-            lastIdleMessageId = null
+            val deleted = api.deleteMessage(owner, previousIdleMessageId)
+            if (deleted) {
+                lastIdleMessageId = null
+            } else {
+                log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+            }
         }
-        // Only clear lastSentMessageId if there was no idle message
-        // (if idle existed, we want to update the previous session output message)
-        if (!hadIdleMessage) {
-            lastSentContent = null
-            lastSentMessageId = null
-        }
+        // Always clear lastSentMessageId when user sends input
+        // so that new output appears as a new message, not editing the old one
+        lastSentContent = null
+        lastSentMessageId = null
         plugin?.onUserInput()
     }
 
@@ -529,17 +535,19 @@ class TelegramBot(
             // Delete idle message when user sends input
             val owner = ownerChatId
             val previousIdleMessageId = lastIdleMessageId
-            val hadIdleMessage = previousIdleMessageId != null
+
             if (owner != null && previousIdleMessageId != null) {
-                api.deleteMessage(owner, previousIdleMessageId)
-                lastIdleMessageId = null
+                val deleted = api.deleteMessage(owner, previousIdleMessageId)
+                if (deleted) {
+                    lastIdleMessageId = null
+                } else {
+                    log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+                }
             }
-            // Only clear lastSentMessageId if there was no idle message
-            // (if idle existed, we want to update the previous session output message)
-            if (!hadIdleMessage) {
-                lastSentContent = null
-                lastSentMessageId = null
-            }
+            // Always clear lastSentMessageId when user sends input
+            // so that new output appears as a new message, not editing the old one
+            lastSentContent = null
+            lastSentMessageId = null
             plugin?.onUserInput()
         } else {
             val s = session
@@ -553,17 +561,20 @@ class TelegramBot(
             // Delete idle message when user sends input
             val owner = ownerChatId
             val previousIdleMessageId = lastIdleMessageId
-            val hadIdleMessage = previousIdleMessageId != null
+
             if (owner != null && previousIdleMessageId != null) {
-                api.deleteMessage(owner, previousIdleMessageId)
-                lastIdleMessageId = null
+                val deleted = api.deleteMessage(owner, previousIdleMessageId)
+                if (deleted) {
+                    lastIdleMessageId = null
+                } else {
+                    log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+                }
             }
-            // Only clear lastSentMessageId if there was no idle message
-            // (if idle existed, we want to update the previous session output message)
-            if (!hadIdleMessage) {
-                lastSentContent = null
-                lastSentMessageId = null
-            }
+            // Always clear lastSentMessageId when user sends input
+            // so that new output appears as a new message, not editing the old one
+            lastSentContent = null
+            lastSentMessageId = null
+            plugin?.onUserInput()
         }
     }
 
@@ -580,17 +591,19 @@ class TelegramBot(
             // Delete idle message when user sends input
             val owner = ownerChatId
             val previousIdleMessageId = lastIdleMessageId
-            val hadIdleMessage = previousIdleMessageId != null
+
             if (owner != null && previousIdleMessageId != null) {
-                api.deleteMessage(owner, previousIdleMessageId)
-                lastIdleMessageId = null
+                val deleted = api.deleteMessage(owner, previousIdleMessageId)
+                if (deleted) {
+                    lastIdleMessageId = null
+                } else {
+                    log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+                }
             }
-            // Only clear lastSentMessageId if there was no idle message
-            // (if idle existed, we want to update the previous session output message)
-            if (!hadIdleMessage) {
-                lastSentContent = null
-                lastSentMessageId = null
-            }
+            // Always clear lastSentMessageId when user sends input
+            // so that new output appears as a new message, not editing the old one
+            lastSentContent = null
+            lastSentMessageId = null
             plugin?.onUserInput()
         } else {
             val s = session
@@ -604,17 +617,20 @@ class TelegramBot(
             // Delete idle message when user sends input
             val owner = ownerChatId
             val previousIdleMessageId = lastIdleMessageId
-            val hadIdleMessage = previousIdleMessageId != null
+
             if (owner != null && previousIdleMessageId != null) {
-                api.deleteMessage(owner, previousIdleMessageId)
-                lastIdleMessageId = null
+                val deleted = api.deleteMessage(owner, previousIdleMessageId)
+                if (deleted) {
+                    lastIdleMessageId = null
+                } else {
+                    log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+                }
             }
-            // Only clear lastSentMessageId if there was no idle message
-            // (if idle existed, we want to update the previous session output message)
-            if (!hadIdleMessage) {
-                lastSentContent = null
-                lastSentMessageId = null
-            }
+            // Always clear lastSentMessageId when user sends input
+            // so that new output appears as a new message, not editing the old one
+            lastSentContent = null
+            lastSentMessageId = null
+            plugin?.onUserInput()
         }
     }
 
@@ -755,8 +771,12 @@ class TelegramBot(
                             val idleMessageOwner = ownerChatId
                             val previousIdleMessageId = lastIdleMessageId
                             if (idleMessageOwner != null && previousIdleMessageId != null) {
-                                api.deleteMessage(idleMessageOwner, previousIdleMessageId)
-                                lastIdleMessageId = null
+                                val deleted = api.deleteMessage(idleMessageOwner, previousIdleMessageId)
+                                if (deleted) {
+                                    lastIdleMessageId = null
+                                } else {
+                                    log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, idleMessageOwner)
+                                }
                             }
                             lastContent = content
 
@@ -791,7 +811,12 @@ class TelegramBot(
                                         val previousIdleMessageId = lastIdleMessageId
                                         if (previousIdleMessageId != null) {
                                             // Try to delete the old idle message
-                                            api.deleteMessage(owner, previousIdleMessageId)
+                                            val deleted = api.deleteMessage(owner, previousIdleMessageId)
+                                            if (deleted) {
+                                                lastIdleMessageId = null
+                                            } else {
+                                                log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+                                            }
                                         }
 
                                         // Send new idle message (don't update lastSentMessageId/content)

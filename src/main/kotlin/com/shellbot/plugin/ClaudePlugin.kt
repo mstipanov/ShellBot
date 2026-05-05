@@ -22,7 +22,7 @@ class ClaudePlugin : SessionPlugin {
 
     override fun matches(command: String): Boolean {
         val cmd = command.trim().lowercase()
-        return cmd.startsWith("claude")
+        return cmd.contains("claude")
     }
 
     override fun onUserInput() {
@@ -95,7 +95,7 @@ class ClaudePlugin : SessionPlugin {
             .map { it.trimEnd() }
             .dropLastWhile { it.isBlank() }
             .dropLast(5)
-            .filter { !it.startsWith("──────────────────────────────────────────────────────────") }
+            .filter { !it.startsWith("───────────────") }
             .takeLast(10)
    }
 
