@@ -143,10 +143,11 @@ class TelegramApi(private val token: String) {
         }
     }
 
-    fun sendMessage(chatId: Long, text: String): Long? {
+    fun sendMessage(chatId: Long, text: String, inCodeBlock: Boolean = false): Long? {
         val body = JSONObject()
         body.put("chat_id", chatId)
-        body.put("text", text)
+        body.put("parse_mode", "MarkdownV2")
+        body.put("text", prepareMarkdown(text, inCodeBlock))
 
         val request = HttpRequest.newBuilder()
             .uri(URI.create("$baseUrl/sendMessage"))
@@ -172,11 +173,12 @@ class TelegramApi(private val token: String) {
         }
     }
 
-    fun editMessageText(chatId: Long, messageId: Long, text: String): Boolean {
+    fun editMessageText(chatId: Long, messageId: Long, text: String, inCodeBlock: Boolean = false): Boolean {
         val body = JSONObject()
         body.put("chat_id", chatId)
         body.put("message_id", messageId)
-        body.put("text", text)
+        body.put("parse_mode", "MarkdownV2")
+        body.put("text", prepareMarkdown(text, inCodeBlock))
 
         val request = HttpRequest.newBuilder()
             .uri(URI.create("$baseUrl/editMessageText"))
@@ -199,6 +201,29 @@ class TelegramApi(private val token: String) {
             log.error("[editMessageText] exception", e)
             false
         }
+    }
+
+    /**
+     * Build the MarkdownV2 payload text. For streamed terminal/assistant output
+     * ([inCodeBlock]) the content is wrapped in a fenced code block so it renders
+     * monospaced and reserved characters are treated literally — no escaping needed.
+     * For other short status/help messages, reserved characters are escaped so the
+     * message always parses.
+     */
+    internal fun prepareMarkdown(text: String, inCodeBlock: Boolean): String {
+        if (!inCodeBlock) return escapeMarkdownV2(text)
+        // code-lang is left empty (```) so Telegram renders a plain monospace block.
+        return "```\n" + text + "\n```"
+    }
+
+    /**
+     * Escape Telegram MarkdownV2 reserved characters so the text always parses.
+     * Because the bot streams plain terminal/assistant output (not authored
+     * Markdown), every reserved character is escaped to keep messages from
+     * failing with "can't parse entities".
+     */
+    internal fun escapeMarkdownV2(text: String): String {
+        return text.replace(Regex("([_*\\[\\]()~`>#+\\-=|{}.!])"), "\\\\$1")
     }
 
     fun deleteMessage(chatId: Long, messageId: Long): Boolean {

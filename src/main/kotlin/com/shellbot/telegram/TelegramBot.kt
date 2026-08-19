@@ -683,7 +683,7 @@ class TelegramBot(
             if (lines.isEmpty()) {
                 api.sendMessage(chatId, "(no visible output)")
             } else {
-                api.sendMessage(chatId, lines.joinToString("\n"))
+                api.sendMessage(chatId, lines.joinToString("\n"), inCodeBlock = true)
             }
         } else {
             val s = session
@@ -814,14 +814,14 @@ class TelegramBot(
                             val owner = ownerChatId ?: continue
                             val existingId = lastSentMessageId
                             if (existingId != null) {
-                                val edited = api.editMessageText(owner, existingId, content)
+                                val edited = api.editMessageText(owner, existingId, content, inCodeBlock = true)
                                 if (!edited) {
-                                    val newId = api.sendMessage(owner, content)
+                                    val newId = api.sendMessage(owner, content, inCodeBlock = true)
                                     logLastTelegramMessage(owner, content)
                                     if (newId != null) lastSentMessageId = newId
                                 }
                             } else {
-                                val newId = api.sendMessage(owner, content)
+                                val newId = api.sendMessage(owner, content, inCodeBlock = true)
                                 logLastTelegramMessage(owner, content)
                                 if (newId != null) lastSentMessageId = newId
                             }

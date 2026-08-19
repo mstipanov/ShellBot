@@ -135,11 +135,23 @@ Send `/start` to your bot to claim ownership (first user only). Then:
 ### For All Sessions
 - **Session inactive** -- After `idleNotifySeconds` of no new output (default: 30, configurable per session), sends "Session inactive: input needed!" notification
 
-### Claude Code Specific (via ClaudePlugin)
-When running `claude`, the ClaudePlugin automatically detects state changes and notifies you:
+### Agent Specific (via SessionPlugins)
+When running `claude` or `opencode`, the matching plugin automatically detects state changes and notifies you:
 
-- **Idle** -- Claude finished working and is waiting for input
-- **Permission required** -- Claude is asking to run a tool and needs your approval
+- **Idle** -- the agent finished working and is waiting for input
+- **Permission required** -- the agent is asking to run a tool and needs your approval
+
+Supported agents:
+- **Claude Code** (`shellbot -c "claude"`) -- `ClaudePlugin`
+- **opencode** (`shellbot -c "opencode"`) -- `OpencodePlugin`
+
+opencode renders a three-region TUI, so `OpencodePlugin` isolates just the main
+output section (assistant messages + tool output) before it is streamed to
+Telegram: the right-hand context sidebar (Context / MCP / LSP / token & price
+counters) and the bottom chrome (model line, input box, delimiters, help bar)
+are stripped, leaving only the conversation output.
+
+Plugins are discovered via Java SPI. Any other command uses the generic "Session inactive" notification.
 
 Output sent to Telegram is cleaned up: ANSI escapes, box-drawing characters, and status bar lines are stripped, leaving only the meaningful content.
 
@@ -165,7 +177,8 @@ src/main/kotlin/com/shellbot/
 ├── plugin/
 │   ├── SessionPlugin.kt       # Plugin interface
 │   ├── SessionPluginLoader.kt # SPI-based plugin discovery
-│   └── ClaudePlugin.kt        # State tracking and output filtering
+│   ├── ClaudePlugin.kt        # State tracking and output filtering for Claude Code
+│   └── OpencodePlugin.kt      # State tracking and output filtering for opencode
 └── telegram/
     ├── TelegramApi.kt          # Telegram Bot HTTP API client
     ├── TelegramBot.kt          # Message handling and command routing
