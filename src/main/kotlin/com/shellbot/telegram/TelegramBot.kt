@@ -46,7 +46,6 @@ class TelegramBot(
     @Volatile
     private var generalIdleNotificationSent = false
 
-
     private val isTmuxMode get() = tmuxSessionName != null
     private val tmuxTarget get() = if (tmuxSessionName != null) "=$tmuxSessionName" else ""  // '=' prefix for commands that support it (has-session, display-message)
 
@@ -59,6 +58,30 @@ class TelegramBot(
     }
 
     companion object {
+        private val SESSION_INACTIVE_FILE: Path = Paths.get(System.getProperty("user.home"), ".shellbot", "session_inactive_sent")
+
+        fun touchSessionInactiveFile() {
+            try {
+                SESSION_INACTIVE_FILE.parent.toFile().mkdirs()
+                SESSION_INACTIVE_FILE.toFile().createNewFile()
+            } catch (e: Exception) {
+                TelegramBot.log.warn("Failed to touch session_inactive_sent file: {}", e.message)
+            }
+        }
+
+        fun deleteSessionInactiveFile() {
+            try {
+                SESSION_INACTIVE_FILE.toFile().delete()
+            } catch (_: Exception) { }
+        }
+
+        fun isSessionInactiveFilePresent(): Boolean {
+            return try {
+                SESSION_INACTIVE_FILE.toFile().exists()
+            } catch (_: Exception) {
+                false
+            }
+        }
         private val log = LoggerFactory.getLogger(TelegramBot::class.java)
         private val CONFIG_DIR: Path = Paths.get(System.getProperty("user.home"), ".shellbot")
         private val OWNER_FILE: Path = CONFIG_DIR.resolve("owner.txt")
@@ -275,6 +298,7 @@ class TelegramBot(
                     }
 
                     idleNotificationSent = false
+                    deleteSessionInactiveFile()
                     generalIdleNotificationSent = false
                     // Delete idle message when user sends input
                     val owner = ownerChatId
@@ -319,6 +343,7 @@ class TelegramBot(
                     if (isAudioFile(fileName, document.mimeType)) {
                         processAudioFile(chatId, filePath.toFile().absolutePath)
                     } else {
+                        deleteSessionInactiveFile()
                         idleNotificationSent = false
                         generalIdleNotificationSent = false
                         // Delete idle message when user sends input
@@ -460,9 +485,9 @@ class TelegramBot(
             s.sendInput(command)
             log.info("Audio command sent to process")
         }
-
         idleNotificationSent = false
         generalIdleNotificationSent = false
+        deleteSessionInactiveFile()
         // Delete idle message when user sends input
         val owner = ownerChatId
         val previousIdleMessageId = lastIdleMessageId
@@ -532,6 +557,7 @@ class TelegramBot(
             tmuxSendEnter()
             idleNotificationSent = false
             generalIdleNotificationSent = false
+            deleteSessionInactiveFile()
             // Delete idle message when user sends input
             val owner = ownerChatId
             val previousIdleMessageId = lastIdleMessageId
@@ -558,6 +584,7 @@ class TelegramBot(
             s.sendInput("")
             idleNotificationSent = false
             generalIdleNotificationSent = false
+            deleteSessionInactiveFile()
             // Delete idle message when user sends input
             val owner = ownerChatId
             val previousIdleMessageId = lastIdleMessageId
@@ -588,6 +615,7 @@ class TelegramBot(
             tmuxSendEnter()
             idleNotificationSent = false
             generalIdleNotificationSent = false
+            deleteSessionInactiveFile()
             // Delete idle message when user sends input
             val owner = ownerChatId
             val previousIdleMessageId = lastIdleMessageId
@@ -614,6 +642,7 @@ class TelegramBot(
             s.sendInput(text)
             idleNotificationSent = false
             generalIdleNotificationSent = false
+            deleteSessionInactiveFile()
             // Delete idle message when user sends input
             val owner = ownerChatId
             val previousIdleMessageId = lastIdleMessageId
@@ -767,6 +796,7 @@ class TelegramBot(
                             lastLogTime = System.currentTimeMillis()
                             idleNotificationSent = false
                             generalIdleNotificationSent = false
+                            deleteSessionInactiveFile()
                             // Delete previous idle message when new content arrives
                             val idleMessageOwner = ownerChatId
                             val previousIdleMessageId = lastIdleMessageId
@@ -807,6 +837,11 @@ class TelegramBot(
                                     // Send Telegram notification about inactivity (only once per inactivity period)
                                     val owner = ownerChatId
                                     if (owner != null && !generalIdleNotificationSent) {
+                                        // Skip if sentinel file exists (notification was already sent)
+                                        if (isSessionInactiveFilePresent()) {
+                                            // Already notified externally, skip sending
+                                            continue
+                                        }
                                         // Delete previous idle message if exists
                                         val previousIdleMessageId = lastIdleMessageId
                                         if (previousIdleMessageId != null) {
@@ -826,6 +861,7 @@ class TelegramBot(
                                             lastIdleMessageId = messageId
                                         }
                                         generalIdleNotificationSent = true
+                                        touchSessionInactiveFile()
                                     }
                                     lastLogTime = System.currentTimeMillis()
                                 }

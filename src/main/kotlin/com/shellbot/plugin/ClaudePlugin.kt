@@ -95,7 +95,7 @@ class ClaudePlugin : SessionPlugin {
             .map { it.trimEnd() }
             .dropLastWhile { it.isBlank() }
             .dropLast(5)
-            .filter { !it.startsWith("───────────────") }
+            .filter { !it.contains("───────────────") }
             .takeLast(10)
    }
 
