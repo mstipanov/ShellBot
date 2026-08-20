@@ -86,4 +86,22 @@ class ClaudePluginTest {
             assertEquals(SessionPlugin.NOTIFICATION_IDLE, notifications.first())
         }
     }
+
+    @Test
+    fun testGetModelInfo() {
+        val plugin = ClaudePlugin()
+        val output = "Ctrl+C to exit | Claude 3.7 Sonnet | 10,234 tokens used"
+
+        assertEquals("Claude 3.7 Sonnet", plugin.getModelInfo(output))
+    }
+
+    @Test
+    fun testGetContextInfo() {
+        val plugin = ClaudePlugin()
+        val output = "Ctrl+C to exit | Claude 3.7 Sonnet | 10,234 tokens used"
+
+        val info = plugin.getContextInfo(output)
+        assertEquals(true, info != null)
+        assertEquals(true, info!!.contains("10,234 tokens"))
+    }
 }

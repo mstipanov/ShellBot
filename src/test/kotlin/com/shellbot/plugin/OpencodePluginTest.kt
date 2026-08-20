@@ -116,4 +116,72 @@ class OpencodePluginTest {
         assertEquals(false, joined.contains("Context"))
         assertEquals(false, joined.contains("tokens"))
     }
+
+    @Test
+    fun testGetModelInfo() {
+        val plugin = OpencodePlugin()
+        val raw = "" +
+            "     Main output" + " ".repeat(160) + "Context\n" +
+            "     ▣  Build · DeepSeek V4 IB\n" +
+            "     ⹀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n"
+
+        assertEquals("Build · DeepSeek V4 IB", plugin.getModelInfo(raw))
+    }
+
+    @Test
+    fun testGetModelInfoStripsTiming() {
+        val plugin = OpencodePlugin()
+        val raw = "     ⭘  Plan · gpt-5 · 12.5s\n"
+
+        assertEquals("Plan · gpt-5", plugin.getModelInfo(raw))
+    }
+
+    @Test
+    fun testGetModelInfoNullWhenNoModelLine() {
+        val plugin = OpencodePlugin()
+        assertEquals(null, plugin.getModelInfo("just some output\n"))
+    }
+
+    @Test
+    fun testGetContextInfo() {
+        val plugin = OpencodePlugin()
+        val raw = "" +
+            " ".repeat(167) + "Context\n" +
+            " ".repeat(150) + "76,678 tokens\n" +
+            " ".repeat(160) + "0% used\n"
+
+        val info = plugin.getContextInfo(raw)
+        assertEquals(true, info != null)
+        assertEquals(true, info!!.contains("76,678 tokens"))
+        assertEquals(true, info.contains("0% used"))
+    }
+
+    @Test
+    fun testGetContextInfoNullWhenNoTokens() {
+        val plugin = OpencodePlugin()
+        assertEquals(null, plugin.getContextInfo("no context here\n"))
+    }
+
+    @Test
+    fun testGetSessionTitle() {
+        val plugin = OpencodePlugin()
+        // Title sits in the right-hand sidebar (right of ~col 165), above "Context".
+        val raw = "" +
+            " ".repeat(165) + "Telegram bot chat buttons &\n" +
+            " ".repeat(165) + "commands setup\n" +
+            " ".repeat(150) + "Context\n" +
+            " ".repeat(150) + "125,190 tokens\n" +
+            " ".repeat(160) + "12% used\n" +
+            " ".repeat(160) + "\$0.00 spent\n"
+
+        val title = plugin.getSessionTitle(raw)
+        assertEquals("Telegram bot chat buttons & commands setup", title)
+    }
+
+    @Test
+    fun testGetSessionTitleNullWithoutTitle() {
+        val plugin = OpencodePlugin()
+        val raw = " ".repeat(150) + "Context\n" + " ".repeat(150) + "100 tokens\n"
+        assertEquals(null, plugin.getSessionTitle(raw))
+    }
 }

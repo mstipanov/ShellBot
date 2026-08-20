@@ -99,6 +99,24 @@ class ClaudePlugin : SessionPlugin {
             .takeLast(10)
    }
 
+    override fun getModelInfo(currentOutput: String): String? {
+        val stripped = stripAnsi(currentOutput)
+        // "Claude 3.7 Sonnet", "Claude Opus 4", "Claude Sonnet 4.5" — model segment in status bar
+        val modelSegment = Regex("Claude\\s+[^·|\\n]{2,40}")
+        return stripped.lines().firstNotNullOfOrNull { l ->
+            modelSegment.find(l)?.value?.trim()
+        }
+    }
+
+    override fun getContextInfo(currentOutput: String): String? {
+        val stripped = stripAnsi(currentOutput)
+        // "10,234 tokens used", "52.4K tokens", "100 tokens left"
+        val tokensSegment = Regex("[\\d.,]+\\s*[KM]?\\s*tokens?\\s*(?:used|left)?")
+        return stripped.lines().firstNotNullOfOrNull { l ->
+            tokensSegment.find(l)?.value?.trim()
+        }
+    }
+
     // ---- State detection ----
 
     private fun detectState(lines: List<String>): ClaudeState {

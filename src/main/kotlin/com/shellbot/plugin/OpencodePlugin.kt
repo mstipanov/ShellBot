@@ -102,6 +102,18 @@ class OpencodePlugin : SessionPlugin {
         return isolateOutputSection(rawOutput).takeLast(10)
     }
 
+    override fun getModelInfo(currentOutput: String): String? {
+        return detectModel(currentOutput)
+    }
+
+    override fun getContextInfo(currentOutput: String): String? {
+        return detectContextUsage(currentOutput)
+    }
+
+    override fun getSessionTitle(currentOutput: String): String? {
+        return detectSessionTitle(currentOutput)
+    }
+
     // ---- Output-section isolation ----
 
     /**
@@ -239,6 +251,96 @@ class OpencodePlugin : SessionPlugin {
             return true
         }
         return line.matches(Regex("^\\s*[>❯⏵❱▶►⟩»›\\$]\\s+.*"))
+    }
+
+    // ---- Model / context detection ----
+
+    /**
+     * Extracts the active model from opencode's model line.
+     *
+     * Model lines look like "   ▣  Build · DeepSeek V4 IB" or
+     * "   ⭘  Plan · deepseek-v4-flash · 3.9s" — a leading mode glyph, the agent
+     * name, a "·" separator and the model. A trailing " · <duration>" is stripped.
+     */
+    private fun detectModel(stripped: String): String? {
+        val modelLine = Regex("^\\s*[▣⭘⬡□○▲]\\s+.*·.*")
+        val line = stripped.lines()
+            .map { stripAnsi(it) }
+            .firstOrNull { modelLine.matches(it) } ?: return null
+
+        val rest = line.trim().replace(Regex("^[▣⭘⬡□○▲]\\s*"), "")
+        // Split on " · " and drop any trailing duration-like segment (e.g. "3.9s").
+        val parts = rest.split(Regex("\\s*·\\s*")).filter { it.isNotBlank() }
+        val noTiming = parts.filterNot { it.matches(Regex("^\\d+([.,]\\d+)?s$")) }
+        val agent = noTiming.firstOrNull() ?: return null
+        val model = noTiming.getOrNull(1) ?: return agent
+        return "$agent · $model"
+    }
+
+    /**
+     * Extracts context / token usage from opencode's right-hand sidebar.
+     *
+     * The Context section renders the used token count ("76,678 tokens") and the
+     * percentage used ("0% used") on consecutive lines. It returns them combined,
+     * e.g. "76,678 tokens · 0% used".
+     */
+    private fun detectContextUsage(stripped: String): String? {
+        val lines = stripped.lines().map { stripAnsi(it) }
+        val tokenCount = Regex("([\\d.,]+)\\s*tokens?")
+        val percent = Regex("(\\d+(?:\\.\\d+)?)%\\s*(?:used|of)")
+
+        val tokens = lines.firstNotNullOfOrNull { l ->
+            tokenCount.find(l)?.groupValues?.get(1)
+        }
+        val percentUsed = lines.firstNotNullOfOrNull { l ->
+            percent.find(l)?.groupValues?.get(1)
+        }
+
+        if (tokens == null && percentUsed == null) return null
+        return listOfNotNull(tokens?.let { "$it tokens" }, percentUsed?.let { "$it% used" }).joinToString(" · ")
+    }
+
+    /**
+     * Extracts the session title from the top of opencode's right-hand sidebar,
+     * above the "Context" section.
+     *
+     * The sidebar begins at [sidebarColumn]. Its top rows show the session title
+     * (possibly spanning multiple wrapped lines), followed by the "Context" header
+     * and then token/percent/spent data. This collects the consecutive right-side
+     * segments until the first recognizable section header / data line is reached.
+     */
+    private fun detectSessionTitle(stripped: String): String? {
+        val strippedLines = stripped.lines().map { stripAnsi(it) }
+
+        val titleSegments = mutableListOf<String>()
+        for (line in strippedLines) {
+            val seg = if (line.length <= sidebarColumn) "" else line.substring(sidebarColumn).trim()
+
+            if (seg.isBlank()) {
+                // Keep scanning past leading rows, but stop once the title has ended.
+                if (titleSegments.isNotEmpty()) break
+                continue
+            }
+
+            val lower = seg.lowercase()
+            val sectionHeaders = listOf("context", "session", "mcp", "lsp")
+            val isSectionHeader = sectionHeaders.any { header ->
+                val cleaned = lower.dropWhile { it == '▾' || it == '▸' || it == '▼' }.trimStart()
+                cleaned == header || cleaned.startsWith("$header ")
+            }
+            val isContextData = seg.matches(Regex("^[\\d.,]+\\s*[KM]?\\s*tokens?$")) ||
+                seg.matches(Regex("^\\d+(?:\\.\\d+)?%\\s*(?:used|of)")) ||
+                seg.contains("spent", ignoreCase = true) ||
+                seg.startsWith("•")
+            val isBoxDrawing = seg.all { it == '─' || it == '━' || it == '╌' || it == '╍' || it == '_' }
+
+            if (isSectionHeader || isContextData || isBoxDrawing) break
+
+            titleSegments.add(seg)
+        }
+
+        if (titleSegments.isEmpty()) return null
+        return titleSegments.joinToString(" ").replace(Regex("\\s+"), " ").trim()
     }
 
     // ---- Utilities ----

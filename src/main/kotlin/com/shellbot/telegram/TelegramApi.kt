@@ -173,6 +173,92 @@ class TelegramApi(private val token: String) {
         }
     }
 
+    /**
+     * Send (or update) the persistent reply keyboard shown at the bottom of the
+     * chat. [rows] is the keyboard grid (each inner list is one row of buttons).
+     * The keyboard is resized and persistent so it stays visible until replaced.
+     * Returns the new message id, or null on failure.
+     */
+    fun sendReplyKeyboard(chatId: Long, rows: List<List<String>>): Long? {
+        val keyboardJson = JSONObject()
+        keyboardJson.put("resize_keyboard", true)
+        keyboardJson.put("is_persistent", true)
+        val kbArray = org.json.JSONArray()
+        for (row in rows) {
+            val rowArray = org.json.JSONArray()
+            for (label in row) {
+                rowArray.put(JSONObject().put("text", label))
+            }
+            kbArray.put(rowArray)
+        }
+        keyboardJson.put("keyboard", kbArray)
+
+        val body = JSONObject()
+        body.put("chat_id", chatId)
+        body.put("text", "⌨️")
+        body.put("reply_markup", keyboardJson)
+
+        return try {
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("$baseUrl/sendMessage"))
+                .timeout(Duration.ofSeconds(10))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            val json = JSONObject(response.body())
+            if (json.getBoolean("ok")) {
+                val messageId = json.getJSONObject("result").getLong("message_id")
+                log.debug("[sendReplyKeyboard] chatId={}, rows={}, messageId={}", chatId, rows.size, messageId)
+                messageId
+            } else {
+                log.warn("[sendReplyKeyboard] API returned ok=false: {}", response.body())
+                null
+            }
+        } catch (e: Exception) {
+            log.error("[sendReplyKeyboard] exception", e)
+            null
+        }
+    }
+
+    /**
+     * Register the bot's available commands shown in the Telegram "/" command menu.
+     * [commands] is a list of "command" to "description" pairs.
+     */
+    fun setMyCommands(commands: List<Pair<String, String>>): Boolean {
+        val commandsArray = org.json.JSONArray()
+        for ((command, description) in commands) {
+            commandsArray.put(
+                JSONObject()
+                    .put("command", command)
+                    .put("description", description)
+            )
+        }
+
+        val body = JSONObject()
+        body.put("commands", commandsArray)
+
+        return try {
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("$baseUrl/setMyCommands"))
+                .timeout(Duration.ofSeconds(10))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            val ok = JSONObject(response.body()).getBoolean("ok")
+            if (ok) {
+                log.debug("[setMyCommands] registered {} commands", commands.size)
+            } else {
+                log.warn("[setMyCommands] API returned ok=false: {}", response.body())
+            }
+            ok
+        } catch (e: Exception) {
+            log.error("[setMyCommands] exception", e)
+            false
+        }
+    }
+
     fun editMessageText(chatId: Long, messageId: Long, text: String, inCodeBlock: Boolean = false): Boolean {
         val body = JSONObject()
         body.put("chat_id", chatId)

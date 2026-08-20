@@ -16,6 +16,27 @@ interface SessionPlugin {
     fun processImage(filePath: String): String? = null
     fun processAudio(filePath: String): String? = null
 
+    /**
+     * Returns a short human-readable description of the active model, if the
+     * running session exposes one (e.g. "Build · DeepSeek V4 IB").
+     * Return null when the plugin cannot determine the model.
+     */
+    fun getModelInfo(currentOutput: String): String? = null
+
+    /**
+     * Returns a short human-readable description of the context / token usage,
+     * if the running session exposes one (e.g. "76,678 tokens · 0% used").
+     * Return null when the plugin cannot determine the context usage.
+     */
+    fun getContextInfo(currentOutput: String): String? = null
+
+    /**
+     * Returns the running session's title, if the running session exposes one
+     * (e.g. opencode's session title shown above the context sidebar).
+     * Return null when the plugin cannot determine the session title.
+     */
+    fun getSessionTitle(currentOutput: String): String? = null
+
     companion object {
         const val NOTIFICATION_IDLE = "Claude is idle — waiting for input."
         const val NOTIFICATION_PERMISSION = "Claude needs permission — check the terminal."
