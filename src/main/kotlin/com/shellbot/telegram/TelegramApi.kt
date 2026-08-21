@@ -25,7 +25,10 @@ class TelegramApi(private val token: String) {
         val photo: List<PhotoSize>? = null,
         val document: Document? = null,
         val audio: Audio? = null,
-        val voice: Voice? = null
+        val voice: Voice? = null,
+        val callbackQueryId: String? = null,
+        val callbackData: String? = null,
+        val callbackFromId: Long? = null
     )
 
     data class PhotoSize(
@@ -80,6 +83,25 @@ class TelegramApi(private val token: String) {
         return (0 until result.length()).mapNotNull { i ->
             val update = result.getJSONObject(i)
             val updateId = update.getLong("update_id")
+
+            // Inline-keyboard button press (callback query) — no "message" to parse.
+            val callbackQuery = update.optJSONObject("callback_query")
+            if (callbackQuery != null) {
+                val callbackId = callbackQuery.getString("id")
+                val data = callbackQuery.optString("data", null)
+                val fromId = callbackQuery.optJSONObject("from")?.getLong("id")
+                val cqMessage = callbackQuery.optJSONObject("message")
+                val cqChatId = cqMessage?.optJSONObject("chat")?.getLong("id") ?: fromId ?: 0L
+                return@mapNotNull Update(
+                    updateId = updateId,
+                    chatId = cqChatId,
+                    text = null,
+                    callbackQueryId = callbackId,
+                    callbackData = data,
+                    callbackFromId = fromId
+                )
+            }
+
             val message = update.optJSONObject("message") ?: return@mapNotNull null
             val chat = message.getJSONObject("chat")
             val chatId = chat.getLong("id")
@@ -174,29 +196,25 @@ class TelegramApi(private val token: String) {
     }
 
     /**
-     * Send (or update) the persistent reply keyboard shown at the bottom of the
-     * chat. [rows] is the keyboard grid (each inner list is one row of buttons).
-     * The keyboard is resized and persistent so it stays visible until replaced.
-     * Returns the new message id, or null on failure.
+     * Send a message with an inline keyboard. [buttons] is a grid of
+     * (label, callbackData) pairs; each row is one list. Returns the message id.
      */
-    fun sendReplyKeyboard(chatId: Long, rows: List<List<String>>): Long? {
-        val keyboardJson = JSONObject()
-        keyboardJson.put("resize_keyboard", true)
-        keyboardJson.put("is_persistent", true)
-        val kbArray = org.json.JSONArray()
-        for (row in rows) {
+    fun sendInlineKeyboard(chatId: Long, text: String, buttons: List<List<Pair<String, String>>>): Long? {
+        val markup = JSONObject()
+        val rowsArray = org.json.JSONArray()
+        for (row in buttons) {
             val rowArray = org.json.JSONArray()
-            for (label in row) {
-                rowArray.put(JSONObject().put("text", label))
+            for ((label, data) in row) {
+                rowArray.put(JSONObject().put("text", label).put("callback_data", data))
             }
-            kbArray.put(rowArray)
+            rowsArray.put(rowArray)
         }
-        keyboardJson.put("keyboard", kbArray)
+        markup.put("inline_keyboard", rowsArray)
 
         val body = JSONObject()
         body.put("chat_id", chatId)
-        body.put("text", "⌨️")
-        body.put("reply_markup", keyboardJson)
+        body.put("text", text)
+        body.put("reply_markup", markup)
 
         return try {
             val request = HttpRequest.newBuilder()
@@ -208,16 +226,34 @@ class TelegramApi(private val token: String) {
             val response = client.send(request, HttpResponse.BodyHandlers.ofString())
             val json = JSONObject(response.body())
             if (json.getBoolean("ok")) {
-                val messageId = json.getJSONObject("result").getLong("message_id")
-                log.debug("[sendReplyKeyboard] chatId={}, rows={}, messageId={}", chatId, rows.size, messageId)
-                messageId
+                json.getJSONObject("result").getLong("message_id")
             } else {
-                log.warn("[sendReplyKeyboard] API returned ok=false: {}", response.body())
+                log.warn("[sendInlineKeyboard] API returned ok=false: {}", response.body())
                 null
             }
         } catch (e: Exception) {
-            log.error("[sendReplyKeyboard] exception", e)
+            log.error("[sendInlineKeyboard] exception", e)
             null
+        }
+    }
+
+    /** Acknowledge an inline-button press so Telegram stops showing the loading spinner. */
+    fun answerCallbackQuery(callbackQueryId: String): Boolean {
+        val body = JSONObject()
+        body.put("callback_query_id", callbackQueryId)
+
+        return try {
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("$baseUrl/answerCallbackQuery"))
+                .timeout(Duration.ofSeconds(10))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            JSONObject(response.body()).getBoolean("ok")
+        } catch (e: Exception) {
+            log.error("[answerCallbackQuery] exception", e)
+            false
         }
     }
 

@@ -114,6 +114,14 @@ class OpencodePlugin : SessionPlugin {
         return detectSessionTitle(currentOutput)
     }
 
+    override fun getPermissionText(currentOutput: String): String? {
+        return detectPermissionText(currentOutput)
+    }
+
+    override fun getPermissionOptions(currentOutput: String): List<String> {
+        return detectPermissionOptions(currentOutput)
+    }
+
     // ---- Output-section isolation ----
 
     /**
@@ -341,6 +349,61 @@ class OpencodePlugin : SessionPlugin {
 
         if (titleSegments.isEmpty()) return null
         return titleSegments.joinToString(" ").replace(Regex("\\s+"), " ").trim()
+    }
+
+    // ---- Permission detection ----
+
+    /**
+     * Extracts the text of a pending permission request from the tail of the
+     * output (the question/command opencode is asking about). Returns null when
+     * no permission prompt is showing.
+     */
+    private fun detectPermissionText(stripped: String): String? {
+        val lines = stripped.lines().map { stripAnsi(it) }.map { it.trim() }.filter { it.isNotEmpty() }
+        if (!hasPermissionRequest(lines)) return null
+        // Prefer a "Do you want to proceed …" question, else a longer "Allow …"
+        // line; avoid bare option tokens like "Allow" / "Reject".
+        lines.lastOrNull { it.contains("proceed", ignoreCase = true) }?.let { return it }
+        return lines.lastOrNull { it.contains("Allow") && it.length > 8 }
+            ?: lines.lastOrNull()
+    }
+
+    /**
+     * Extracts the answer options opencode currently offers for a pending
+     * permission request (e.g. ["Allow once", "Reject"]). Unknown prompts return
+     * an empty list.
+     */
+    /**
+     * Extracts the answer options opencode currently offers for a pending
+     * permission request (e.g. ["Allow always", "Allow once", "Reject"]).
+     * Returns an empty list when no permission prompt is showing.
+     */
+    private fun detectPermissionOptions(stripped: String): List<String> {
+        val trimmedLines = stripped.lines().map { stripAnsi(it) }.map { it.trim() }.filter { it.isNotEmpty() }
+        if (!hasPermissionRequest(trimmedLines)) return emptyList()
+        val prompt = trimmedLines.joinToString(" ").lowercase()
+
+        val result = mutableListOf<String>()
+        if (prompt.contains("allow always")) result.add("Allow always")
+        // "Allow once" is explicit, or the default affirmative for yes/no "proceed?".
+        if (prompt.contains("allow once") || prompt.contains("proceed")) result.add("Allow once")
+        if (prompt.contains("deny all")) result.add("Deny all")
+        if (prompt.contains("skip")) result.add("Skip")
+        // Reject is offered whenever any allow/deny option is present, or for
+        // yes/no "proceed?" questions.
+        if (prompt.contains("reject") || prompt.contains("proceed") || prompt.contains("allow")) {
+            result.add("Reject")
+        }
+
+        // Default for a recognized prompt that spells out none of the above.
+        if (result.isEmpty()) {
+            return if (prompt.contains("proceed") || prompt.contains("allow")) {
+                listOf("Allow once", "Reject")
+            } else {
+                emptyList()
+            }
+        }
+        return result.distinct()
     }
 
     // ---- Utilities ----

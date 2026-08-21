@@ -119,7 +119,7 @@ This provides a better terminal experience when working with Claude Code session
 
 ## Telegram Commands
 
-Send `/start` to your bot to claim ownership (first user only). Then:
+Send `/start` to your bot to claim ownership (first user only). The bot's available commands are registered in the Telegram "/" command menu:
 
 | Command | Description |
 |---------|-------------|

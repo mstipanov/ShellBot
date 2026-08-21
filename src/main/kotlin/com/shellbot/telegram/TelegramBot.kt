@@ -32,7 +32,6 @@ class TelegramBot(
 ) {
     private val api = TelegramApi(token)
     private var session: ProcessSession? = null
-    private var sessionCommand: String? = null
     private var offset = 0L
     @Volatile
     private var ownerChatId: Long? = null
@@ -46,6 +45,12 @@ class TelegramBot(
     private var idleNotificationSent = false
     @Volatile
     private var generalIdleNotificationSent = false
+    @Volatile
+    private var pendingPermissionMessageId: Long? = null
+    @Volatile
+    private var pendingPermissionFingerprint: String? = null
+    @Volatile
+    private var pendingPermissionAnswered = false
 
     private val isTmuxMode get() = tmuxSessionName != null
     private val tmuxTarget get() = if (tmuxSessionName != null) "=$tmuxSessionName" else ""  // '=' prefix for commands that support it (has-session, display-message)
@@ -60,13 +65,6 @@ class TelegramBot(
 
     companion object {
         private val SESSION_INACTIVE_FILE: Path = Paths.get(System.getProperty("user.home"), ".shellbot", "session_inactive_sent")
-
-        // Reply-keyboard button prefixes. The full button label embeds the live
-        // value (e.g. "🤖 Build · DeepSeek V4 IB"); pressing a button sends its
-        // text, which [handleMessage] matches by prefix to query the session.
-        const val MODEL_PREFIX = "🤖"
-        const val CONTEXT_PREFIX = "📊"
-        const val SESSION_PREFIX = "📋"
 
         // Commands advertised in the "/" command menu (setMyCommands).
         val COMMAND_MENU: List<Pair<String, String>> = listOf(
@@ -170,7 +168,6 @@ class TelegramBot(
 
         if (isTmuxMode) {
             startMonitorDaemon()
-            startKeyboardRefresher()
         }
 
         while (true) {
@@ -189,6 +186,12 @@ class TelegramBot(
 
     private fun handleUpdate(update: TelegramApi.Update) {
         val chatId = update.chatId
+
+        // Inline-keyboard button press (e.g. answering a permission prompt)
+        if (update.callbackQueryId != null) {
+            handleCallbackQuery(update)
+            return
+        }
 
         // Debug: log what we received
         log.debug("Received update: chatId={}, text={}, photo={}, document={}, audio={}, voice={}",
@@ -226,9 +229,6 @@ class TelegramBot(
         }
 
         when {
-            text.startsWith(MODEL_PREFIX) -> handleModelQuery(chatId)
-            text.startsWith(CONTEXT_PREFIX) -> handleContextQuery(chatId)
-            text.startsWith(SESSION_PREFIX) -> handleSessionQuery(chatId)
             text.startsWith("/sb_run ") -> handleRun(chatId, text.removePrefix("/sb_run ").trim())
             text == "/sb_output" || text == "/sb_o" -> handleOutput(chatId)
             text == "/sb_kill" -> handleKill(chatId)
@@ -239,63 +239,94 @@ class TelegramBot(
         }
     }
 
-    private fun currentSessionOutput(): String? {
-        return if (isTmuxMode) {
-            if (!isTmuxAlive()) null else tmuxCapturePane()
-        } else {
-            session?.getLastLines(50)?.joinToString("\n")
+    /**
+     * Handle an inline-keyboard button press. Currently used to answer a pending
+     * permission prompt: forwards the chosen answer to the session as input,
+     * deletes the prompt message, and acknowledges the press.
+     */
+    private fun handleCallbackQuery(update: TelegramApi.Update) {
+        val chatId = update.chatId
+        val data = update.callbackData
+        val callbackId = update.callbackQueryId
+
+        // Answer the callback so Telegram clears the loading state.
+        if (callbackId != null) {
+            api.answerCallbackQuery(callbackId)
         }
+
+        if (chatId != ownerChatId) {
+            api.sendMessage(chatId, "Unauthorized. This bot is locked to another user.")
+            return
+        }
+
+        if (data == null || data == "ignore" || pendingPermissionAnswered) {
+            // Stale or already-answered press — nothing to act on.
+            return
+        }
+
+        pendingPermissionAnswered = true
+        pendingPermissionFingerprint = null
+
+        // Delete the prompt message now that it has been answered.
+        pendingPermissionMessageId?.let { api.deleteMessage(chatId, it) }
+        pendingPermissionMessageId = null
+
+        // Forward the chosen answer to the session so opencode sees it.
+        log.info("Permission answered via Telegram: {}", data)
+        sendResponseToSession(data)
     }
 
-    /** Active model value for the current session, or null if unavailable. */
-    private fun modelValue(): String? {
-        val output = currentSessionOutput() ?: return null
-        val info = plugin?.getModelInfo(output) ?: return null
-        return "$MODEL_PREFIX $info"
-    }
-
-    /** Context / token usage value for the current session, or null if unavailable. */
-    private fun contextValue(): String? {
-        val output = currentSessionOutput() ?: return null
-        val info = plugin?.getContextInfo(output) ?: return null
-        return "$CONTEXT_PREFIX $info"
+    /** Send a response/answer as keyboard input to the running session. */
+    private fun sendResponseToSession(text: String) {
+        if (isTmuxMode) {
+            if (!isTmuxAlive()) return
+            tmuxSendKeys(text)
+            tmuxSendEnter()
+        } else {
+            val s = session
+            if (s == null || !s.isAlive()) return
+            s.sendInput(text)
+        }
+        idleNotificationSent = false
+        generalIdleNotificationSent = false
+        deleteSessionInactiveFile()
+        lastSentContent = null
+        lastSentMessageId = null
+        plugin?.onUserInput()
     }
 
     /**
-     * Current session title (prefer the session's own title, e.g. opencode's
-     * sidebar title), falling back to the tmux session name / /sb_run command.
+     * If the session is showing a permission prompt, send (or update) a Telegram
+     * message with inline buttons matching opencode's offered options.
      */
-    private fun sessionValue(): String {
-        currentSessionOutput()?.let { output ->
-            plugin?.getSessionTitle(output)?.let { return "$SESSION_PREFIX $it" }
+    private fun sendPermissionPrompt(owner: Long, output: String) {
+        val plugin = this.plugin ?: return
+        val question = plugin.getPermissionText(output)
+        if (question == null) {
+            // No prompt right now — clear any pending state.
+            pendingPermissionAnswered = false
+            return
         }
-        val fallback = if (isTmuxMode) tmuxSessionName else sessionCommand
-        return if (fallback != null) "$SESSION_PREFIX $fallback" else "$SESSION_PREFIX (none)"
-    }
 
-    private fun handleModelQuery(chatId: Long) {
-        api.sendMessage(chatId, modelValue() ?: "(no model info available)")
-    }
-
-    private fun handleContextQuery(chatId: Long) {
-        api.sendMessage(chatId, contextValue() ?: "(no context info available)")
-    }
-
-    private fun handleSessionQuery(chatId: Long) {
-        api.sendMessage(chatId, sessionValue())
-    }
-
-    /** Build the reply-keyboard rows with live values embedded in each button. */
-    private fun buildKeyboardRows(): List<List<String>> {
-        val rows = mutableListOf<List<String>>()
-        modelValue()?.let { rows.add(listOf(it)) }
-        contextValue()?.let { rows.add(listOf(it)) }
-        if (rows.isEmpty()) {
-            rows.add(listOf("$MODEL_PREFIX n/a"))
-            rows.add(listOf("$CONTEXT_PREFIX n/a"))
+        // Avoid re-posting the same prompt repeatedly.
+        val fingerprint = question
+        if (pendingPermissionFingerprint == fingerprint && pendingPermissionMessageId != null) {
+            return
         }
-        rows.add(listOf(sessionValue()))
-        return rows
+        pendingPermissionFingerprint = fingerprint
+
+        val options = plugin.getPermissionOptions(output)
+        // Always keep a Reject fallback if opencode didn't list one.
+        val optionSet = (options + listOf("Reject")).distinct().take(3)
+        val buttons = optionSet.map { listOf(it to it) }
+
+        val oldId = pendingPermissionMessageId
+        val text = "🔔 Permission required\n$question"
+        val newId = api.sendInlineKeyboard(owner, text, buttons)
+        pendingPermissionMessageId = newId
+        pendingPermissionAnswered = false
+        // Remove the previous prompt message (if any) once a fresh one is posted.
+        oldId?.let { api.deleteMessage(owner, it) }
     }
 
     private val helpText = """
@@ -630,8 +661,7 @@ class TelegramBot(
     }
 
     /**
-     * Register the "/" command menu and show the persistent bottom reply keyboard
-     * (live Model / Context / Session buttons) for the owning chat.
+     * Register the bot's commands in the Telegram "/" command menu for the owner.
      */
     private fun setupOwnerUi(chatId: Long) {
         try {
@@ -639,59 +669,6 @@ class TelegramBot(
         } catch (e: Exception) {
             log.warn("Failed to set command menu", e)
         }
-        sendReplyKeyboard(chatId)
-    }
-
-    @Volatile
-    private var lastKeyboardRefresh = 0L
-    @Volatile
-    private var lastKeyboardMessageId: Long? = null
-    private val keyboardRefreshCooldownMs = 10_000L
-
-    /**
-     * Send the reply keyboard with the current live values. Skips if the values
-     * are unchanged since the last send (minimizing traffic), and deletes the
-     * previous keyboard-posting message to keep the chat uncluttered.
-     */
-    private fun sendReplyKeyboard(chatId: Long, force: Boolean = false) {
-        val now = System.currentTimeMillis()
-        if (now - lastKeyboardRefresh < keyboardRefreshCooldownMs) return
-        val rows = buildKeyboardRows()
-        if (!force && rows == lastKeyboardRows) return
-        lastKeyboardRefresh = now
-        lastKeyboardRows = rows
-        try {
-            val newId = api.sendReplyKeyboard(chatId, rows)
-            lastKeyboardMessageId?.let { prev ->
-                api.deleteMessage(chatId, prev)
-            }
-            lastKeyboardMessageId = newId
-        } catch (e: Exception) {
-            log.warn("Failed to send reply keyboard", e)
-        }
-    }
-
-    /** Currently shown keyboard rows, used to skip no-op refreshes. */
-    @Volatile
-    private var lastKeyboardRows: List<List<String>>? = null
-
-    /** Periodically refresh the live-value reply keyboard (tmux mode). */
-    private fun startKeyboardRefresher() {
-        val thread = Thread({
-            while (isTmuxAlive()) {
-                try {
-                    val owner = ownerChatId
-                    if (owner != null) {
-                        sendReplyKeyboard(owner)
-                    }
-                    Thread.sleep(5000)
-                } catch (_: Exception) {
-                    Thread.sleep(5000)
-                }
-            }
-        }, "keyboard-refresher")
-        thread.isDaemon = true
-        thread.start()
     }
 
     // --- Input ---
@@ -886,9 +863,7 @@ class TelegramBot(
         session?.let { if (it.isAlive()) it.kill() }
         try {
             session = ProcessSession(command)
-            sessionCommand = command
             api.sendMessage(chatId, "Started: $command")
-            sendReplyKeyboard(chatId)
         } catch (e: Exception) {
             api.sendMessage(chatId, "Failed to start process: ${e.message}")
         }
@@ -933,6 +908,17 @@ class TelegramBot(
                         // Check if content has really changed (from user's perspective)
                         val contentReallyChanged = cleanContent != lastCleanContent
 
+                        // Detect a pending permission prompt on every tick and post the
+                        // answer buttons immediately, independent of the idle-based logic
+                        // below. Otherwise the Allow/Reject buttons only appear after the
+                        // pane has been static for idleNotifySeconds, and can be missed.
+                        val ownerForCheck = ownerChatId
+                        if (plugin != null && ownerForCheck != null) {
+                            if (plugin.getPermissionText(output) != null) {
+                                sendPermissionPrompt(ownerForCheck, output)
+                            }
+                        }
+
                         // If we already sent an inactivity notification and content hasn't REALLY changed,
                         // don't send console output or reset the notification flag
                         if (generalIdleNotificationSent && !contentReallyChanged) {
@@ -976,8 +962,6 @@ class TelegramBot(
                                 if (newId != null) lastSentMessageId = newId
                             }
                             lastSentContent = content
-                            // Refresh the live-value reply keyboard (Model/Context/Session).
-                            sendReplyKeyboard(owner)
                         } else {
                             // Output unchanged — check if idle long enough
                             val idleMs = System.currentTimeMillis() - lastChangeTime
@@ -1021,13 +1005,23 @@ class TelegramBot(
                                 // Only send plugin-specific Telegram notifications if plugin exists
                                 if (!idleNotificationSent && plugin != null) {
                                     val notifications = plugin.checkForNotifications(output, idleNotifySeconds)
+                                    val owner = ownerChatId ?: continue
+                                    var hasPermission = false
                                     for (msg in notifications) {
-                                        val owner = ownerChatId ?: continue
-                                        api.sendMessage(owner, msg)
-                                        logLastTelegramMessage(owner, msg)
+                                        if (msg == SessionPlugin.NOTIFICATION_PERMISSION) {
+                                            hasPermission = true
+                                            sendPermissionPrompt(owner, output)
+                                        } else {
+                                            api.sendMessage(owner, msg)
+                                            logLastTelegramMessage(owner, msg)
+                                        }
                                     }
                                     if (notifications.isNotEmpty()) {
                                         idleNotificationSent = true
+                                    }
+                                    if (hasPermission) {
+                                        // Reset so a new permission prompt can be sent next time.
+                                        idleNotificationSent = false
                                     }
                                 }
                             }

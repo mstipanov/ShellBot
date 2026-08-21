@@ -184,4 +184,34 @@ class OpencodePluginTest {
         val raw = " ".repeat(150) + "Context\n" + " ".repeat(150) + "100 tokens\n"
         assertEquals(null, plugin.getSessionTitle(raw))
     }
+
+    @Test
+    fun testGetPermissionTextAndOptions() {
+        val plugin = OpencodePlugin()
+        val raw = "" +
+            "opencode wants to run this command:\n" +
+            "\$ mvn test\n" +
+            "Allow always · Allow once · Reject\n"
+
+        assertEquals("Allow always · Allow once · Reject", plugin.getPermissionText(raw))
+        val options = plugin.getPermissionOptions(raw)
+        assertEquals(listOf("Allow always", "Allow once", "Reject"), options)
+    }
+
+    @Test
+    fun testGetPermissionTextWithDoYouWantToProceed() {
+        val plugin = OpencodePlugin()
+        val raw = "Do you want to proceed?\nAllow\nReject\n"
+
+        assertEquals("Do you want to proceed?", plugin.getPermissionText(raw))
+        assertEquals(listOf("Allow once", "Reject"), plugin.getPermissionOptions(raw))
+    }
+
+    @Test
+    fun testGetPermissionNullWhenNone() {
+        val plugin = OpencodePlugin()
+        val raw = "just some output\n>"
+        assertEquals(null, plugin.getPermissionText(raw))
+        assertEquals(emptyList(), plugin.getPermissionOptions(raw))
+    }
 }

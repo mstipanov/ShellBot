@@ -37,6 +37,19 @@ interface SessionPlugin {
      */
     fun getSessionTitle(currentOutput: String): String? = null
 
+    /**
+     * Returns the text of a pending permission request (the question/command the
+     * session is asking about), or null if there is no active permission request.
+     */
+    fun getPermissionText(currentOutput: String): String? = null
+
+    /**
+     * Returns the answer options the session currently offers for a pending
+     * permission request (e.g. ["Allow once", "Reject"]). Pressing one forwards
+     * the option text back to the session. Empty when no request is pending.
+     */
+    fun getPermissionOptions(currentOutput: String): List<String> = emptyList()
+
     companion object {
         const val NOTIFICATION_IDLE = "Claude is idle — waiting for input."
         const val NOTIFICATION_PERMISSION = "Claude needs permission — check the terminal."
