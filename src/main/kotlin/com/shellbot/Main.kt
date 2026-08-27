@@ -9,10 +9,10 @@ import kotlin.system.exitProcess
  *
  * Usage: shellbot -c "command"
  *
- * If tmux is available, runs inside a tmux session with side-channels:
+ * Runs inside a tmux session with side-channels:
  *   - ~/.shellbot/input.txt / output.txt for file-based I/O
  *   - Telegram bot if configured in ~/.shellbot/settings.yaml
- * Otherwise falls back to plain inheritIO.
+ * If tmux is not installed, attempts to install it; exits with an error if unavailable.
  */
 object ShellBotMain {
     private val log = LoggerFactory.getLogger(ShellBotMain::class.java)
@@ -50,11 +50,9 @@ object ShellBotMain {
 
             val settings = Settings.promptSessionSetup(sessionId)
 
-            val exitCode = if (isTmuxAvailable()) {
-                TmuxSession(command, sessionId, settings).run()
-            } else {
-                ShellBot(command).run()
-            }
+            ensureTmux()
+
+            val exitCode = TmuxSession(command, sessionId, settings).run()
 
             if (verbose) {
                 log.info("Process exited with code: {}", exitCode)
@@ -82,5 +80,45 @@ object ShellBotMain {
         } catch (_: Exception) {
             false
         }
+    }
+
+    /**
+     * Ensures tmux is installed. Returns if tmux is available (either already
+     * installed or successfully installed). If tmux is missing and installation fails,
+     * prints a note to the console and exits with an error.
+     */
+    private fun ensureTmux() {
+        if (isTmuxAvailable()) {
+            return
+        }
+
+        log.warn("tmux is not installed, attempting to install it...")
+
+        val installCmds = listOf(
+            listOf("brew", "install", "tmux"),
+            listOf("apt-get", "install", "-y", "tmux"),
+            listOf("yum", "install", "-y", "tmux")
+        )
+
+        for (cmd in installCmds) {
+            try {
+                val p = ProcessBuilder(cmd)
+                    .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+                    .redirectError(ProcessBuilder.Redirect.INHERIT)
+                    .start()
+                if (p.waitFor() == 0 && isTmuxAvailable()) {
+                    log.info("tmux installed successfully via ${cmd[0]}")
+                    return
+                }
+            } catch (_: Exception) {
+                // try next package manager
+            }
+        }
+
+        log.error("Failed to install tmux")
+        System.err.println("tmux is missing and needs to be installed.")
+        System.err.println("ShellBot relies on tmux to wrap sessions and run the Telegram bot.")
+        System.err.println("Please install tmux manually, e.g. 'brew install tmux'.")
+        exitProcess(1)
     }
 }
