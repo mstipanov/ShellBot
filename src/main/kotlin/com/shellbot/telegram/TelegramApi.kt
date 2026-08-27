@@ -2,6 +2,7 @@ package com.shellbot.telegram
 
 import org.json.JSONObject
 import org.slf4j.LoggerFactory
+import java.io.ByteArrayOutputStream
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -191,6 +192,61 @@ class TelegramApi(private val token: String) {
             }
         } catch (e: Exception) {
             log.error("[sendMessage] exception parsing response: {}", response.body(), e)
+            null
+        }
+    }
+
+    /**
+     * Send a file to the chat as a Telegram document attachment (sendDocument
+     * API) via multipart/form-data. [caption] is plain text (no Markdown).
+     * Returns the message id, or null on failure.
+     */
+    fun sendDocument(chatId: Long, fileName: String, caption: String, data: ByteArray): Long? {
+        val boundary = "----ShellBotBoundary" + java.lang.Long.toHexString(System.nanoTime())
+        val crlf = "\r\n"
+        val body = ByteArrayOutputStream()
+        fun write(s: String) = body.write(s.toByteArray())
+        fun writeBytes(b: ByteArray) = body.write(b)
+        fun part(name: String, value: String) {
+            write("--$boundary$crlf")
+            write("Content-Disposition: form-data; name=\"$name\"$crlf$crlf")
+            write(value)
+            write(crlf)
+        }
+        part("chat_id", chatId.toString())
+        part("caption", caption)
+        write("--$boundary$crlf")
+        write("Content-Disposition: form-data; name=\"document\"; filename=\"$fileName\"$crlf")
+        write("Content-Type: application/octet-stream$crlf$crlf")
+        writeBytes(data)
+        write(crlf)
+        write("--$boundary--$crlf")
+
+        return try {
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("$baseUrl/sendDocument"))
+                .timeout(Duration.ofSeconds(60))
+                .header("Content-Type", "multipart/form-data; boundary=$boundary")
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()))
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            val bodyStr = response.body()
+            val json = try {
+                JSONObject(bodyStr)
+            } catch (e: Exception) {
+                log.error("[sendDocument] non-JSON response status={} body={}", response.statusCode(), bodyStr.take(500), e)
+                return null
+            }
+            if (json.getBoolean("ok")) {
+                val messageId = json.getJSONObject("result").getLong("message_id")
+                log.debug("[sendDocument] chatId={}, fileName={}, size={}, messageId={}", chatId, fileName, data.size, messageId)
+                messageId
+            } else {
+                log.warn("[sendDocument] API returned ok=false: {}", bodyStr)
+                null
+            }
+        } catch (e: Exception) {
+            log.error("[sendDocument] exception sending {} (size {})", fileName, data.size, e)
             null
         }
     }

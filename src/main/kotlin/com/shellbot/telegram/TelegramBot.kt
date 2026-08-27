@@ -2,6 +2,7 @@ package com.shellbot.telegram
 
 import com.shellbot.plugin.SessionPlugin
 import org.slf4j.LoggerFactory
+import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 
@@ -53,6 +54,26 @@ class TelegramBot(
     @Volatile
     private var pendingPermissionAnswered = false
 
+    // Path+size+mtime of files already auto-sent via "File saved: ...", so the
+    // same file isn't re-sent on every monitor tick.
+    private val sentSavedFiles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    // Absolute paths seen in "File saved: ..." that have not been sent yet.
+    // Kept so files that land on disk a moment after the message are still sent
+    // (retried on idle ticks until handled).
+    private val pendingSavedFiles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    // How many failed retries a pending "file saved" path has had. Bounds the
+    // number of times a non-existent path (e.g. regex noise from a merged TUI
+    // pane) is retried before being dropped.
+    private val pendingSavedAttempts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    // Entries offered by the /sb_files browser. Telegram limits callback_data to
+    // 64 bytes, so buttons reference entries by "<listingId>:<index>" and the
+    // real path is looked up here. Keyed the same way.
+    private val browserEntries = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val browserListingId = java.util.concurrent.atomic.AtomicInteger()
+
     private val isTmuxMode get() = tmuxSessionName != null
     private val tmuxTarget get() = if (tmuxSessionName != null) "=$tmuxSessionName" else ""  // '=' prefix for commands that support it (has-session, display-message)
 
@@ -66,6 +87,30 @@ class TelegramBot(
 
     companion object {
         private val SESSION_INACTIVE_FILE: Path = Paths.get(System.getProperty("user.home"), ".shellbot", "session_inactive_sent")
+
+        // Files larger than this are skipped when sending via /sb_files
+        // (Telegram Bot API document limit is ~50 MB).
+        const val MAX_SEND_FILE_BYTES: Long = 50L * 1024 * 1024
+
+        // Max retries for a queued "file saved" path before dropping it (bounds
+        // regex noise / never-appearing files). At a 2s tick this is ~60s.
+        const val MAX_PENDING_ATTEMPTS: Int = 30
+
+        // Callback-data prefixes for the /sb_files browser. Telegram caps
+        // callback_data at 64 bytes, so entries are referenced by a short key.
+        const val BROWSE_DIR_PREFIX = "sbfd:"
+        const val BROWSE_FILE_PREFIX = "sbff:"
+
+        // Telegram rejects very tall keyboards, so cap how many entries a single
+        // directory listing offers.
+        const val MAX_BROWSER_ENTRIES: Int = 40
+
+        // Outcomes of a "file saved" send attempt (see trySendSavedFile).
+        const val SEND_MISSING = 0   // file not on disk (yet) — retry later
+        const val SEND_SENT = 1      // sent successfully
+        const val SEND_ALREADY = 2   // already sent for this content — no retry
+        const val SEND_SKIPPED = 3   // unusable (empty/too large/not a file) — no retry
+        const val SEND_FAILED = 4    // API send failed — retry later
 
         // Reply-keyboard button prefixes. The full button label embeds the live
         // value (e.g. "🤖 Build · DeepSeek V4 IB"); pressing a button sends its
@@ -81,6 +126,7 @@ class TelegramBot(
             "sb_enter" to "Send Enter key",
             "sb_kill" to "Kill / interrupt process",
             "sb_project" to "Show current directory",
+            "sb_files" to "Browse and download project files",
             "sb_run" to "Start a process (standalone mode)",
         )
 
@@ -247,6 +293,7 @@ class TelegramBot(
             text == "/sb_enter" || text == "/sb_e" -> handleEnter(chatId)
             text == "/sb_help" -> handleHelp(chatId)
             text == "/sb_project" || text == "/sb_p" -> handleProject(chatId)
+            text == "/sb_files" || text.startsWith("/sb_files ") -> handleFiles(chatId, text.removePrefix("/sb_files").trim())
             else -> handleInput(chatId, text)
         }
     }
@@ -311,9 +358,10 @@ class TelegramBot(
     }
 
     /**
-     * Handle an inline-keyboard button press. Currently used to answer a pending
-     * permission prompt: forwards the chosen answer to the session as input,
-     * deletes the prompt message, and acknowledges the press.
+     * Handle an inline-keyboard button press. Used by the /sb_files browser
+     * (navigate a directory or download a file) and to answer a pending
+     * permission prompt: the chosen answer is forwarded to the session as input,
+     * the prompt message deleted, and the press acknowledged.
      */
     private fun handleCallbackQuery(update: TelegramApi.Update) {
         val chatId = update.chatId
@@ -330,8 +378,19 @@ class TelegramBot(
             return
         }
 
-        if (data == null || data == "ignore" || pendingPermissionAnswered) {
-            // Stale or already-answered press — nothing to act on.
+        if (data == null || data == "ignore") {
+            // Stale press — nothing to act on.
+            return
+        }
+
+        // File-browser navigation / download (from /sb_files).
+        if (data.startsWith(BROWSE_DIR_PREFIX) || data.startsWith(BROWSE_FILE_PREFIX)) {
+            handleBrowseCallback(chatId, data)
+            return
+        }
+
+        if (pendingPermissionAnswered) {
+            // Already-answered permission prompt — nothing to act on.
             return
         }
 
@@ -412,6 +471,7 @@ class TelegramBot(
         |/sb_enter or /sb_e — send Enter key
         |/sb_kill — kill/interrupt process (Ctrl-C)
         |/sb_project or /sb_p — show current directory
+        |/sb_files [dir] — browse files and pick one to download
         |/sb_help — show this help
         |
         |Any other text is forwarded as input.
@@ -719,6 +779,256 @@ class TelegramBot(
         val cwd = Paths.get("").toAbsolutePath()
         api.sendMessage(chatId, "Current directory: ${cwd}")
     }
+
+    /**
+     * Entry point for /sb_files. Shows a browser listing of the session's working
+     * directory (or the given subdirectory) with one button per entry, so a file
+     * can be picked and downloaded.
+     */
+    private fun handleFiles(chatId: Long, arg: String) {
+        showFileBrowser(chatId, arg.trim())
+    }
+
+    /**
+     * Post a browser for [dir] (relative to the session's working directory):
+     * one button per subdirectory and file, plus an entry to go up. Pressing a
+     * directory re-lists it; pressing a file downloads it as an attachment.
+     */
+    private fun showFileBrowser(chatId: Long, dir: String) {
+        val cwd = Paths.get("").toAbsolutePath()
+        val base = (if (dir.isBlank()) cwd else cwd.resolve(dir).normalize())
+        if (!Files.isDirectory(base)) {
+            api.sendMessage(chatId, "Not a directory: $base")
+            return
+        }
+
+        val entries = try {
+            Files.list(base).use { stream ->
+                stream.sorted(compareBy({ !Files.isDirectory(it) }, { it.fileName.toString().lowercase() }))
+                    .toList()
+            }
+        } catch (e: Exception) {
+            api.sendMessage(chatId, "Error listing $base: ${e.message}")
+            return
+        }
+
+        // Register this listing so the buttons can reference entries by index.
+        // Old listings are dropped once the map grows large, which only means a
+        // very old keyboard reports "listing has expired" when pressed.
+        if (browserEntries.size > MAX_BROWSER_ENTRIES * 20) {
+            browserEntries.clear()
+        }
+        val listing = browserListingId.incrementAndGet().toString()
+        val buttons = mutableListOf<List<Pair<String, String>>>()
+
+        if (base != cwd && base.parent != null) {
+            browserEntries["$listing:up"] = base.parent.toString()
+            buttons.add(listOf(".." to "$BROWSE_DIR_PREFIX$listing:up"))
+        }
+
+        var shown = 0
+        for ((index, path) in entries.withIndex()) {
+            if (shown >= MAX_BROWSER_ENTRIES) break
+            val key = "$listing:$index"
+            browserEntries[key] = path.toString()
+            val name = path.fileName.toString()
+            if (Files.isDirectory(path)) {
+                buttons.add(listOf("📁 $name" to "$BROWSE_DIR_PREFIX$key"))
+            } else {
+                val size = try { Files.size(path) } catch (_: Exception) { 0L }
+                buttons.add(listOf("📄 $name (${humanSize(size)})" to "$BROWSE_FILE_PREFIX$key"))
+            }
+            shown++
+        }
+
+        if (buttons.isEmpty()) {
+            api.sendMessage(chatId, "(empty directory: $base)")
+            return
+        }
+
+        val header = buildString {
+            append("📂 ").append(if (base == cwd) "." else cwd.relativize(base).toString())
+            if (entries.size > shown) append("\n(showing first $shown of ${entries.size} entries)")
+        }
+        api.sendInlineKeyboard(chatId, header, buttons)
+    }
+
+    /** Human-readable file size for browser button labels. */
+    private fun humanSize(bytes: Long): String = when {
+        bytes >= 1024L * 1024 -> "${bytes / (1024 * 1024)} MB"
+        bytes >= 1024L -> "${bytes / 1024} KB"
+        else -> "$bytes B"
+    }
+
+    /**
+     * Handle a press on a file-browser button: either re-list a directory or
+     * send the chosen file as a document attachment.
+     */
+    private fun handleBrowseCallback(chatId: Long, data: String) {
+        val cwd = Paths.get("").toAbsolutePath()
+        val isDir = data.startsWith(BROWSE_DIR_PREFIX)
+        val key = data.removePrefix(if (isDir) BROWSE_DIR_PREFIX else BROWSE_FILE_PREFIX)
+        val target = browserEntries[key]
+        if (target == null) {
+            api.sendMessage(chatId, "That listing has expired — run /sb_files again.")
+            return
+        }
+
+        val path = Paths.get(target)
+        if (isDir) {
+            val rel = if (path == cwd) "" else runCatching { cwd.relativize(path).toString() }.getOrDefault(target)
+            showFileBrowser(chatId, rel)
+            return
+        }
+
+        try {
+            if (!Files.isRegularFile(path)) {
+                api.sendMessage(chatId, "No longer a file: ${path.fileName}")
+                return
+            }
+            val size = Files.size(path)
+            if (size == 0L) {
+                api.sendMessage(chatId, "File is empty: ${path.fileName}")
+                return
+            }
+            if (size > MAX_SEND_FILE_BYTES) {
+                api.sendMessage(chatId, "File is too large to send (${humanSize(size)}): ${path.fileName}")
+                return
+            }
+            val rel = runCatching { cwd.relativize(path).toString() }.getOrDefault(path.toString())
+            val bytes = Files.readAllBytes(path)
+            if (api.sendDocument(chatId, path.fileName.toString(), rel, bytes) == null) {
+                api.sendMessage(chatId, "Failed to send ${path.fileName}")
+            }
+        } catch (e: Exception) {
+            log.warn("[files] browser send failed for {}", path, e)
+            api.sendMessage(chatId, "Failed to send ${path.fileName}: ${e.message}")
+        }
+    }
+
+    /**
+     * Scan [output] for lines where the agent reports saving a file
+     * ("File saved: <path>", e.g. claude/opencode output) and send each newly
+     * reported file to the chat as a document attachment. Paths are resolved
+     * relative to the session's working directory. Because an agent may print
+     * "File saved:" a moment before the file actually lands on disk, reported
+     * paths are also queued and retried on idle ticks until they are sent.
+     */
+    private fun detectAndSendSavedFiles(chatId: Long, output: String) {
+        val cwd = Paths.get("").toAbsolutePath()
+        val regex = Regex("(?i)file\\s+saved\\s*[:：]\\s*(.+)")
+        for (line in output.lines()) {
+            val match = regex.find(line) ?: continue
+            val path = extractSavedPath(match.groupValues[1])
+            if (path.isBlank()) continue
+            pendingSavedFiles.add(cwd.resolve(path).normalize().toString())
+        }
+        if (pendingSavedFiles.isNotEmpty()) {
+            trySendPendingFiles(chatId)
+        }
+    }
+
+    /**
+     * Clean the text captured after "File saved:" into a plausible file path.
+     * When the session's pane renders the whole conversation (e.g. opencode's
+     * TUI), the "File saved:" line is often visually merged with following text,
+     * e.g. `File saved: app.kt. Since I finished writing...`. This trims trailing
+     * sentence-continuation text and stray quotes so only the path remains.
+     */
+    private fun extractSavedPath(s: String): String {
+        var p = s.trim()
+        // A TUI renders side-by-side columns, so the sidebar text ends up on the
+        // same captured line, separated by a run of spaces (e.g.
+        // "…/hello-world.txt          LSP"). Two or more spaces never occur inside
+        // a real path here, so cut at the first such gutter.
+        val gutter = Regex("""\s{2,}""").find(p)
+        if (gutter != null) {
+            p = p.substring(0, gutter.range.first)
+        }
+        // A sentence boundary (punctuation + space + capital letter) or a closing
+        // quote mark are very strong signals that the path has ended and the rest
+        // is merged conversation text. Cut there.
+        val merged = Regex("""(?:[.,،;!?]+\s+\p{Lu}|["”'’]\s+)""").find(p)
+        if (merged != null) {
+            p = p.substring(0, merged.range.first)
+        }
+        return p.trimEnd(' ', '.', ',', '”', '"', '\'', '`', '’', ':', '\n', '\r')
+    }
+
+    /**
+     * Attempt to send every queued "file saved" file, retrying those whose files
+     * are not on disk yet (or were empty too early). Entries are dropped once
+     * they have been handled (sent, or already sent for the same content).
+     */
+    private fun trySendPendingFiles(chatId: Long) {
+        if (pendingSavedFiles.isEmpty()) return
+        val iter = pendingSavedFiles.iterator()
+        var sent = 0
+        while (iter.hasNext()) {
+            val pathStr = iter.next()
+            val r = trySendSavedFile(chatId, Paths.get(pathStr))
+            when (r) {
+                SEND_SENT, SEND_ALREADY, SEND_SKIPPED -> {
+                    pendingSavedAttempts.remove(pathStr)
+                    iter.remove()
+                }
+                SEND_MISSING, SEND_FAILED -> {
+                    // Keep retrying, but drop after too many attempts so
+                    // non-existent paths (regex noise) don't accumulate forever.
+                    val attempts = (pendingSavedAttempts[pathStr] ?: 0) + 1
+                    if (attempts >= MAX_PENDING_ATTEMPTS) {
+                        pendingSavedAttempts.remove(pathStr)
+                        iter.remove()
+                    } else {
+                        pendingSavedAttempts[pathStr] = attempts
+                    }
+                }
+            }
+            if (r == SEND_SENT) sent++
+        }
+        if (sent > 0) {
+            sendReplyKeyboard(chatId)
+        }
+    }
+
+    /**
+     * Send a single file as a document if it exists, is usable, and hasn't been
+     * sent already for its current (size, mtime). Returns a tri-state describing
+     * the outcome so the caller can decide whether to keep retrying.
+     */
+    private fun trySendSavedFile(chatId: Long, path: Path): Int {
+        val cwd = Paths.get("").toAbsolutePath()
+        return try {
+            if (!Files.isRegularFile(path)) {
+                log.debug("[files] saved file not on disk yet: {}", path)
+                return SEND_MISSING
+            }
+            val size = Files.size(path)
+            if (size == 0L || size > MAX_SEND_FILE_BYTES) {
+                log.debug("[files] skipping {} (size={})", path, size)
+                return SEND_SKIPPED
+            }
+            val mtime = Files.getLastModifiedTime(path).toMillis()
+            val key = "$path|$size|$mtime"
+            if (!sentSavedFiles.add(key)) {
+                return SEND_ALREADY
+            }
+            val rel = cwd.relativize(path).toString()
+            val bytes = Files.readAllBytes(path)
+            val ok = api.sendDocument(chatId, path.fileName.toString(), rel, bytes)
+            if (ok != null) {
+                log.info("[files] auto-sent saved file: {}", rel)
+                SEND_SENT
+            } else {
+                sentSavedFiles.remove(key)
+                SEND_FAILED
+            }
+        } catch (e: Exception) {
+            log.debug("[files] not a usable path '{}': {}", path, e.message)
+            SEND_SKIPPED
+        }
+    }
+
 
     private fun sendStartupProjectMessage(chatId: Long) {
         // First, unpin any currently pinned message
@@ -1040,6 +1350,15 @@ class TelegramBot(
                         // Check if content has really changed (from user's perspective)
                         val contentReallyChanged = cleanContent != lastCleanContent
 
+                        // Auto-send files the agent says it saved ("File saved: <path>"),
+                        // e.g. files claude/opencode create during the run.
+                        if (contentReallyChanged) {
+                            val fOwner = ownerChatId
+                            if (fOwner != null) {
+                                detectAndSendSavedFiles(fOwner, output)
+                            }
+                        }
+
                         // Detect a pending permission prompt on every tick and update the
                         // answer buttons immediately, independent of the idle-based logic
                         // below. Otherwise the Allow/Reject buttons only appear after the
@@ -1097,6 +1416,11 @@ class TelegramBot(
                             // Refresh the live-value reply keyboard (Model/Context/Session).
                             sendReplyKeyboard(owner)
                         } else {
+                            // Output unchanged — retry queued "File saved:" files
+                            // that may have landed on disk since the last attempt
+                            // (the agent can print the message before the file is
+                            // fully written).
+                            ownerChatId?.let { trySendPendingFiles(it) }
                             // Output unchanged — check if idle long enough
                             val idleMs = System.currentTimeMillis() - lastChangeTime
                             if (idleMs >= idleNotifySeconds * 1000L) {

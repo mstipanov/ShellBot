@@ -127,6 +127,7 @@ Send `/start` to your bot to claim ownership (first user only). The bot's availa
 | `/sb_enter` or `/sb_e` | Send Enter key |
 | `/sb_kill` | Send Ctrl-C |
 | `/sb_project` or `/sb_p` | Show current directory |
+| `/sb_files` or `/sb_files <dir>` | Browse files and pick one to download |
 | `/sb_help` | Show help |
 | *(any text)* | Forwarded as keyboard input to the session |
 
@@ -154,6 +155,26 @@ are stripped, leaving only the conversation output.
 Plugins are discovered via Java SPI. Any other command uses the generic "Session inactive" notification.
 
 Output sent to Telegram is cleaned up: ANSI escapes, box-drawing characters, and status bar lines are stripped, leaving only the meaningful content.
+
+### Auto-sending saved files
+
+When the agent reports that it saved a file (a line matching `File saved: <path>` in
+the session output, e.g. files claude/opencode create during a run), ShellBot
+automatically sends that file to the chat as a document attachment. Each file is
+sent once per (path + size + modification time); if the file is later re-saved with
+different content it will be sent again.
+
+Because a TUI (like opencode) renders its sidebar on the same terminal line, the
+reported path is cut at the first run of two or more spaces, and at any trailing
+sentence text, so only the real path is used. If the file has not landed on disk
+yet when the message appears, the path is queued and retried for a short while.
+
+### Browsing and downloading files
+
+`/sb_files` posts a listing of the session's working directory as inline buttons —
+directories first, then files with their sizes. Pressing a directory navigates into
+it (`..` goes back up); pressing a file sends it to the chat as a document
+attachment. `/sb_files <dir>` starts the browser in a subdirectory.
 
 ## File-Based I/O
 
