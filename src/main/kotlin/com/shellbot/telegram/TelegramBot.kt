@@ -124,6 +124,7 @@ class TelegramBot(
             "sb_help" to "Show available commands",
             "sb_output" to "Last lines of output",
             "sb_enter" to "Send Enter key",
+            "sb_tab" to "Send Tab key",
             "sb_kill" to "Kill / interrupt process",
             "sb_project" to "Show current directory",
             "sb_files" to "Browse and download project files",
@@ -291,6 +292,7 @@ class TelegramBot(
             text == "/sb_output" || text == "/sb_o" -> handleOutput(chatId)
             text == "/sb_kill" -> handleKill(chatId)
             text == "/sb_enter" || text == "/sb_e" -> handleEnter(chatId)
+            text == "/sb_tab" || text == "/sb_t" -> handleTab(chatId)
             text == "/sb_help" -> handleHelp(chatId)
             text == "/sb_project" || text == "/sb_p" -> handleProject(chatId)
             text == "/sb_files" || text.startsWith("/sb_files ") -> handleFiles(chatId, text.removePrefix("/sb_files").trim())
@@ -469,6 +471,7 @@ class TelegramBot(
         |/sb_run <cmd> — start a process (standalone mode)
         |/sb_output or /sb_o — last lines of output
         |/sb_enter or /sb_e — send Enter key
+        |/sb_tab or /sb_t — send Tab key
         |/sb_kill — kill/interrupt process (Ctrl-C)
         |/sb_project or /sb_p — show current directory
         |/sb_files [dir] — browse files and pick one to download
@@ -1170,6 +1173,63 @@ class TelegramBot(
         }
     }
 
+    private fun handleTab(chatId: Long) {
+        if (isTmuxMode) {
+            if (!isTmuxAlive()) {
+                api.sendMessage(chatId, "Tmux session is not running.")
+                return
+            }
+            tmuxSendTab()
+            idleNotificationSent = false
+            generalIdleNotificationSent = false
+            deleteSessionInactiveFile()
+            // Delete idle message when user sends input
+            val owner = ownerChatId
+            val previousIdleMessageId = lastIdleMessageId
+
+            if (owner != null && previousIdleMessageId != null) {
+                val deleted = api.deleteMessage(owner, previousIdleMessageId)
+                if (deleted) {
+                    lastIdleMessageId = null
+                } else {
+                    log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+                }
+            }
+            // Always clear lastSentMessageId when user sends input
+            // so that new output appears as a new message, not editing the old one
+            lastSentContent = null
+            lastSentMessageId = null
+            plugin?.onUserInput()
+        } else {
+            val s = session
+            if (s == null || !s.isAlive()) {
+                api.sendMessage(chatId, "No running process. Use /run <command> first.")
+                return
+            }
+            s.sendRaw("\t")
+            idleNotificationSent = false
+            generalIdleNotificationSent = false
+            deleteSessionInactiveFile()
+            // Delete idle message when user sends input
+            val owner = ownerChatId
+            val previousIdleMessageId = lastIdleMessageId
+
+            if (owner != null && previousIdleMessageId != null) {
+                val deleted = api.deleteMessage(owner, previousIdleMessageId)
+                if (deleted) {
+                    lastIdleMessageId = null
+                } else {
+                    log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+                }
+            }
+            // Always clear lastSentMessageId when user sends input
+            // so that new output appears as a new message, not editing the old one
+            lastSentContent = null
+            lastSentMessageId = null
+            plugin?.onUserInput()
+        }
+    }
+
     private fun handleInput(chatId: Long, text: String) {
         if (isTmuxMode) {
             if (!isTmuxAlive()) {
@@ -1505,6 +1565,10 @@ class TelegramBot(
 
     private fun tmuxSendEnter() {
         tmuxExec("send-keys", "-t", tmuxSessionName!!, "Enter")
+    }
+
+    private fun tmuxSendTab() {
+        tmuxExec("send-keys", "-t", tmuxSessionName!!, "Tab")
     }
 
     private fun tmuxCapturePane(): String {

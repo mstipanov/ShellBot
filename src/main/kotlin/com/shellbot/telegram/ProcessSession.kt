@@ -63,6 +63,15 @@ class ProcessSession(command: String) {
         }
     }
 
+    fun sendRaw(text: String) {
+        try {
+            stdinWriter.write(text)
+            stdinWriter.flush()
+        } catch (_: Exception) {
+            // Process may have closed
+        }
+    }
+
     fun isAlive(): Boolean = process.isAlive
 
     fun kill() {
