@@ -34,7 +34,7 @@ echo "Creating executable JAR..."
 mvn package
 
 # Find the JAR file
-JAR_FILE=$(find "$PROJECT_DIR/target" -name "*.jar" ! -name "original-*" ! -name "*sources*" ! -name "*tests*" | head -1)
+JAR_FILE=$(find "$PROJECT_DIR/target" -maxdepth 1 -name "*.jar" ! -name "original-*" ! -name "*sources*" ! -name "*tests*" | head -1)
 
 if [ -f "$JAR_FILE" ]; then
     echo ""
@@ -45,11 +45,8 @@ if [ -f "$JAR_FILE" ]; then
     echo "  java -jar $JAR_FILE -c \"echo Hello World\""
     echo "  java -jar $JAR_FILE -c \"python3 script.py\" -v"
     echo ""
-    echo "To install globally:"
-    echo "  sudo cp $JAR_FILE /usr/local/bin/shellbot.jar"
-    echo "  echo '#!/bin/bash' > /usr/local/bin/shellbot"
-    echo "  echo 'java -jar /usr/local/bin/shellbot.jar \"\$@\"' >> /usr/local/bin/shellbot"
-    echo "  chmod +x /usr/local/bin/shellbot"
+    echo "To install globally run:"
+    echo "  ./install.sh"
 else
     echo "Error: JAR file not found!"
     exit 1
