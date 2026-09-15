@@ -1,5 +1,6 @@
 package com.shellbot
 
+import com.shellbot.plugin.SessionPlugin
 import com.shellbot.plugin.SessionPluginLoader
 import com.shellbot.telegram.TelegramBot
 import org.slf4j.LoggerFactory
@@ -46,6 +47,37 @@ class TmuxSession(
         INPUT_FILE.writeText("")
         OUTPUT_FILE.writeText("")
 
+        // If a session with this name already exists, attach to and monitor it
+        // instead of creating a new one. The user's process with its own tmux is
+        // left untouched (not killed, no command started).
+        if (isTmuxSessionAlive()) {
+            log.info("Attaching to existing tmux session '{}'", SESSION_NAME)
+            return attachExisting()
+        }
+
+        return createAndRun()
+    }
+
+    /**
+     * Attaches to an existing tmux session and monitors it via the side-channels
+     * and Telegram bot. Does not create or kill the session, and does not start
+     * a command. Returns the attach exit code.
+     */
+    private fun attachExisting(): Int {
+        startMonitors(SessionPluginLoader.findPlugin(command)?.also {
+            log.info("Plugin activated: {}", it.name)
+        })
+
+        val exitCode = attachToSession()
+        // Do not kill the session — it belongs to an already-running process.
+        return exitCode
+    }
+
+    /**
+     * Creates a new detached tmux session, runs [command] inside it, and monitors
+     * it. When the command exits, the session is killed. Returns the attach exit code.
+     */
+    private fun createAndRun(): Int {
         // Kill any leftover session from a previous run
         exec("tmux", "kill-session", "-t", SESSION_TARGET)
 
@@ -81,6 +113,30 @@ class TmuxSession(
             return 0
         }
 
+        startMonitors(SessionPluginLoader.findPlugin(command)?.also {
+            log.info("Plugin activated: {}", it.name)
+        })
+
+        // When the pane's command exits, auto-kill the session so attach returns cleanly.
+        exec("tmux", "set-hook", "-t", SESSION_NAME, "pane-died", "kill-session -t =$SESSION_NAME")
+
+        val exitCode = attachToSession()
+
+        // Clean up
+        exec("tmux", "kill-session", "-t", SESSION_TARGET)
+        return exitCode
+    }
+
+    /** Attach to the tmux session — blocking call with full terminal control. */
+    private fun attachToSession(): Int {
+        val attachPb = ProcessBuilder("tmux", "attach", "-t", SESSION_TARGET)
+        attachPb.inheritIO()
+        val attachProcess = attachPb.start()
+        return attachProcess.waitFor()
+    }
+
+    /** Starts the input-watcher, output-capture and Telegram bot daemons. */
+    private fun startMonitors(plugin: SessionPlugin?) {
         // Background thread: watch input.txt → tmux send-keys
         startDaemon("input-watcher") {
             while (isTmuxSessionAlive()) {
@@ -98,12 +154,6 @@ class TmuxSession(
                     }
                 }
             }
-        }
-
-        // Detect plugin for the command being run
-        val plugin = SessionPluginLoader.findPlugin(command)
-        if (plugin != null) {
-            log.info("Plugin activated: {}", plugin.name)
         }
 
         // Background thread: tmux capture-pane → output.txt (with plugin filtering)
@@ -150,20 +200,6 @@ class TmuxSession(
         } else {
             log.info("Telegram integration not configured for session '{}'", sessionId)
         }
-
-        // When the pane's command exits, auto-kill the session so attach returns cleanly.
-        exec("tmux", "set-hook", "-t", SESSION_NAME, "pane-died", "kill-session -t =$SESSION_NAME")
-
-        // Attach to the tmux session — this is the blocking call.
-        // inheritIO() gives the user full terminal control.
-        val attachPb = ProcessBuilder("tmux", "attach", "-t", SESSION_TARGET)
-        attachPb.inheritIO()
-        val attachProcess = attachPb.start()
-        val exitCode = attachProcess.waitFor()
-
-        // Clean up
-        exec("tmux", "kill-session", "-t", SESSION_TARGET)
-        return exitCode
     }
 
     private fun isTmuxSessionAlive(): Boolean {

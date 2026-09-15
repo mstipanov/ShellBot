@@ -341,6 +341,45 @@ class TelegramApi(private val token: String) {
         }
     }
 
+    /**
+     * Remove the persistent reply keyboard (the Model / Context / Session info
+     * buttons) from the bottom of the chat by sending a message whose
+     * reply_markup removes the keyboard. [text] is the message shown alongside
+     * the removal (Telegram rejects an empty text with remove_keyboard, so the
+     * message text must be non-empty). Returns true on success.
+     */
+    fun removeReplyKeyboard(chatId: Long, text: String): Boolean {
+        val safeText = text.ifBlank { "Keyboard cleared." }
+        val markup = JSONObject()
+        markup.put("remove_keyboard", true)
+        markup.put("selective", false)
+
+        val body = JSONObject()
+        body.put("chat_id", chatId)
+        body.put("text", safeText)
+        body.put("reply_markup", markup)
+
+        return try {
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("$baseUrl/sendMessage"))
+                .timeout(Duration.ofSeconds(10))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            val ok = JSONObject(response.body()).getBoolean("ok")
+            if (!ok) {
+                log.warn("[removeReplyKeyboard] API returned ok=false: {}", response.body())
+            } else {
+                log.debug("[removeReplyKeyboard] chatId={}, ok={}", chatId, ok)
+            }
+            ok
+        } catch (e: Exception) {
+            log.error("[removeReplyKeyboard] exception", e)
+            false
+        }
+    }
+
     /** Acknowledge an inline-button press so Telegram stops showing the loading spinner. */
     fun answerCallbackQuery(callbackQueryId: String): Boolean {
         val body = JSONObject()

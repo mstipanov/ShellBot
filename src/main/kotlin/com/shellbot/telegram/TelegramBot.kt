@@ -112,17 +112,12 @@ class TelegramBot(
         const val SEND_SKIPPED = 3   // unusable (empty/too large/not a file) — no retry
         const val SEND_FAILED = 4    // API send failed — retry later
 
-        // Reply-keyboard button prefixes. The full button label embeds the live
-        // value (e.g. "🤖 Build · DeepSeek V4 IB"); pressing a button sends its
-        // text, which [handleMessage] matches by prefix to query the session.
-        const val MODEL_PREFIX = "🤖"
-        const val CONTEXT_PREFIX = "📊"
-        const val SESSION_PREFIX = "📋"
-
         // Commands advertised in the "/" command menu (setMyCommands).
         val COMMAND_MENU: List<Pair<String, String>> = listOf(
             "sb_help" to "Show available commands",
             "sb_output" to "Last lines of output",
+            "sb_info" to "Show model, usage and topic",
+            "sb_clear" to "Remove the reply keyboard / buttons",
             "sb_enter" to "Send Enter key",
             "sb_tab" to "Send Tab key",
             "sb_kill" to "Kill / interrupt process",
@@ -217,13 +212,15 @@ class TelegramBot(
         if (owner != null) {
             sendStartupProjectMessage(owner)
             setupOwnerUi(owner)
+            // Remove any previously-posted info-buttons reply keyboard so existing
+            // bots stop showing the Model/Context/Session buttons.
+            removeInfoKeyboard(owner)
         } else {
             log.info("Waiting for first user to claim the bot with /start...")
         }
 
         if (isTmuxMode) {
             startMonitorDaemon()
-            startKeyboardRefresher()
         }
 
         while (true) {
@@ -285,15 +282,14 @@ class TelegramBot(
         }
 
         when {
-            text.startsWith(MODEL_PREFIX) -> handleModelQuery(chatId)
-            text.startsWith(CONTEXT_PREFIX) -> handleContextQuery(chatId)
-            text.startsWith(SESSION_PREFIX) -> handleSessionQuery(chatId)
             text.startsWith("/sb_run ") -> handleRun(chatId, text.removePrefix("/sb_run ").trim())
             text == "/sb_output" || text == "/sb_o" -> handleOutput(chatId)
             text == "/sb_kill" -> handleKill(chatId)
             text == "/sb_enter" || text == "/sb_e" -> handleEnter(chatId)
             text == "/sb_tab" || text == "/sb_t" -> handleTab(chatId)
             text == "/sb_help" -> handleHelp(chatId)
+            text == "/sb_info" -> handleInfo(chatId)
+            text == "/sb_clear" -> handleClear(chatId)
             text == "/sb_project" || text == "/sb_p" -> handleProject(chatId)
             text == "/sb_files" || text.startsWith("/sb_files ") -> handleFiles(chatId, text.removePrefix("/sb_files").trim())
             else -> handleInput(chatId, text)
@@ -311,15 +307,13 @@ class TelegramBot(
     /** Active model value for the current session, or null if unavailable. */
     private fun modelValue(): String? {
         val output = currentSessionOutput() ?: return null
-        val info = plugin?.getModelInfo(output) ?: return null
-        return "$MODEL_PREFIX $info"
+        return plugin?.getModelInfo(output)
     }
 
     /** Context / token usage value for the current session, or null if unavailable. */
     private fun contextValue(): String? {
         val output = currentSessionOutput() ?: return null
-        val info = plugin?.getContextInfo(output) ?: return null
-        return "$CONTEXT_PREFIX $info"
+        return plugin?.getContextInfo(output)
     }
 
     /**
@@ -328,35 +322,49 @@ class TelegramBot(
      */
     private fun sessionValue(): String {
         currentSessionOutput()?.let { output ->
-            plugin?.getSessionTitle(output)?.let { return "$SESSION_PREFIX $it" }
+            plugin?.getSessionTitle(output)?.let { return it }
         }
         val fallback = if (isTmuxMode) tmuxSessionName else sessionCommand
-        return if (fallback != null) "$SESSION_PREFIX $fallback" else "$SESSION_PREFIX (none)"
+        return fallback ?: "(none)"
     }
 
-    private fun handleModelQuery(chatId: Long) {
-        api.sendMessage(chatId, modelValue() ?: "(no model info available)")
+    /**
+     * /sb_info — show the data that used to live in the Model / Context / Session
+     * reply-keyboard buttons as a single message instead of taking up button space.
+     */
+    private fun handleInfo(chatId: Long) {
+        val sb = StringBuilder()
+        sb.append("Model: ").append(modelValue() ?: "(n/a)").append('\n')
+        sb.append("Usage: ").append(contextValue() ?: "(n/a)").append('\n')
+        sb.append("Topic: ").append(sessionValue())
+        api.sendMessage(chatId, sb.toString())
     }
 
-    private fun handleContextQuery(chatId: Long) {
-        api.sendMessage(chatId, contextValue() ?: "(no context info available)")
-    }
-
-    private fun handleSessionQuery(chatId: Long) {
-        api.sendMessage(chatId, sessionValue())
-    }
-
-    /** Build the reply-keyboard rows with live values embedded in each button. */
-    private fun buildKeyboardRows(): List<List<String>> {
-        val rows = mutableListOf<List<String>>()
-        modelValue()?.let { rows.add(listOf(it)) }
-        contextValue()?.let { rows.add(listOf(it)) }
-        if (rows.isEmpty()) {
-            rows.add(listOf("$MODEL_PREFIX n/a"))
-            rows.add(listOf("$CONTEXT_PREFIX n/a"))
+    /**
+     * Hide the persistent Model / Context / Session reply keyboard that older
+     * versions of the bot posted, if it is still showing on the user's side.
+     * Sends a short non-empty message because Telegram rejects an empty text
+     * combined with remove_keyboard.
+     */
+    private fun removeInfoKeyboard(chatId: Long) {
+        try {
+            api.removeReplyKeyboard(chatId, "Keyboard cleared.")
+        } catch (e: Exception) {
+            log.warn("Failed to remove reply keyboard", e)
         }
-        rows.add(listOf(sessionValue()))
-        return rows
+    }
+
+    /**
+     * /sb_clear — explicitly remove the persistent reply keyboard (the info
+     * buttons / any keyboard) from the bottom of the chat. Handy for clearing a
+     * keyboard an older bot instance left behind before this version took over.
+     * The confirmation message itself carries the remove_keyboard markup.
+     */
+    private fun handleClear(chatId: Long) {
+        val removed = api.removeReplyKeyboard(chatId, "Keyboard removed.")
+        if (!removed) {
+            api.sendMessage(chatId, "Failed to remove keyboard.")
+        }
     }
 
     /**
@@ -470,6 +478,8 @@ class TelegramBot(
         |Commands:
         |/sb_run <cmd> — start a process (standalone mode)
         |/sb_output or /sb_o — last lines of output
+        |/sb_info — show model, usage and topic
+        |/sb_clear — remove the reply keyboard / buttons
         |/sb_enter or /sb_e — send Enter key
         |/sb_tab or /sb_t — send Tab key
         |/sb_kill — kill/interrupt process (Ctrl-C)
@@ -766,7 +776,8 @@ class TelegramBot(
             log.info("Bot claimed by chat ID: {}", chatId)
             val mode = if (isTmuxMode) "tmux session" else "standalone"
             sendStartupProjectMessage(chatId) // This will send and pin the combined message
-            setupOwnerUi(chatId) // Register "/" command menu and show bottom keyboard
+            setupOwnerUi(chatId) // Register "/" command menu
+            removeInfoKeyboard(chatId) // Remove any lingering info-buttons keyboard
         } else if (chatId == ownerChatId) {
             api.sendMessage(chatId, helpText)
         } else {
@@ -989,9 +1000,6 @@ class TelegramBot(
             }
             if (r == SEND_SENT) sent++
         }
-        if (sent > 0) {
-            sendReplyKeyboard(chatId)
-        }
     }
 
     /**
@@ -1050,8 +1058,9 @@ class TelegramBot(
     }
 
     /**
-     * Register the "/" command menu and show the persistent bottom reply keyboard
-     * (live Model / Context / Session buttons) for the owning chat.
+     * Register the "/" command menu for the owning chat. The info buttons
+     * (Model / Context / Session) have been replaced by /sb_info, so no reply
+     * keyboard is posted here.
      */
     private fun setupOwnerUi(chatId: Long) {
         try {
@@ -1059,59 +1068,6 @@ class TelegramBot(
         } catch (e: Exception) {
             log.warn("Failed to set command menu", e)
         }
-        sendReplyKeyboard(chatId)
-    }
-
-    @Volatile
-    private var lastKeyboardRefresh = 0L
-    @Volatile
-    private var lastKeyboardMessageId: Long? = null
-    private val keyboardRefreshCooldownMs = 10_000L
-
-    /**
-     * Send the reply keyboard with the current live values. Skips if the values
-     * are unchanged since the last send (minimizing traffic), and deletes the
-     * previous keyboard-posting message to keep the chat uncluttered.
-     */
-    private fun sendReplyKeyboard(chatId: Long, force: Boolean = false) {
-        val now = System.currentTimeMillis()
-        if (now - lastKeyboardRefresh < keyboardRefreshCooldownMs) return
-        val rows = buildKeyboardRows()
-        if (!force && rows == lastKeyboardRows) return
-        lastKeyboardRefresh = now
-        lastKeyboardRows = rows
-        try {
-            val newId = api.sendReplyKeyboard(chatId, rows)
-            lastKeyboardMessageId?.let { prev ->
-                api.deleteMessage(chatId, prev)
-            }
-            lastKeyboardMessageId = newId
-        } catch (e: Exception) {
-            log.warn("Failed to send reply keyboard", e)
-        }
-    }
-
-    /** Currently shown keyboard rows, used to skip no-op refreshes. */
-    @Volatile
-    private var lastKeyboardRows: List<List<String>>? = null
-
-    /** Periodically refresh the live-value reply keyboard (tmux mode). */
-    private fun startKeyboardRefresher() {
-        val thread = Thread({
-            while (isTmuxAlive()) {
-                try {
-                    val owner = ownerChatId
-                    if (owner != null) {
-                        sendReplyKeyboard(owner)
-                    }
-                    Thread.sleep(5000)
-                } catch (_: Exception) {
-                    Thread.sleep(5000)
-                }
-            }
-        }, "keyboard-refresher")
-        thread.isDaemon = true
-        thread.start()
     }
 
     // --- Input ---
@@ -1365,7 +1321,6 @@ class TelegramBot(
             session = ProcessSession(command)
             sessionCommand = command
             api.sendMessage(chatId, "Started: $command")
-            sendReplyKeyboard(chatId)
         } catch (e: Exception) {
             api.sendMessage(chatId, "Failed to start process: ${e.message}")
         }
@@ -1473,8 +1428,6 @@ class TelegramBot(
                                 if (newId != null) lastSentMessageId = newId
                             }
                             lastSentContent = content
-                            // Refresh the live-value reply keyboard (Model/Context/Session).
-                            sendReplyKeyboard(owner)
                         } else {
                             // Output unchanged — retry queued "File saved:" files
                             // that may have landed on disk since the last attempt
