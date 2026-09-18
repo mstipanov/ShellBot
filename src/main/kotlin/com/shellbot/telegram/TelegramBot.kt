@@ -1465,13 +1465,6 @@ class TelegramBot(
                 var lastContent: String? = null
 
                 while (isTmuxAlive()) {
-                    // If the command exited, the pane is paused (remain-on-exit)
-                    // and waits for /sb_restart. Skip capture while dead so the
-                    // "Pane is dead" output isn't streamed as new content.
-                    if (!isTmuxPaneAlive()) {
-                        Thread.sleep(1000)
-                        continue
-                    }
                     Thread.sleep(2000)
                     try {
                         val output = tmuxCapturePane()
@@ -1646,21 +1639,6 @@ class TelegramBot(
     private fun isTmuxAlive(): Boolean {
         if (!isTmuxMode) return false
         return tmuxExec("has-session", "-t", tmuxTarget) == 0
-    }
-
-    /** Returns true if the pane's process is still running (not "dead"). */
-    private fun isTmuxPaneAlive(): Boolean {
-        if (!isTmuxMode) return false
-        return try {
-            val pb = ProcessBuilder("tmux", "display-message", "-t", tmuxSessionName!!, "-p", "#{pane_dead}")
-            pb.redirectErrorStream(true)
-            val p = pb.start()
-            val output = p.inputStream.bufferedReader().readText().trim()
-            p.waitFor()
-            output != "1"
-        } catch (_: Exception) {
-            false
-        }
     }
 
     private fun tmuxSendKeys(text: String) {

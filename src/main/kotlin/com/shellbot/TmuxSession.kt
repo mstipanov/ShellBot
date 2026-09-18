@@ -62,20 +62,13 @@ class TmuxSession(
          * the session (and therefore the ShellBot process attached to it) alive.
          *
          * `respawn-pane -k` kills the current command and starts [command] again
-         * in the same pane. The `pane-died` hook that would otherwise kill the
-         * session on exit must be removed first, otherwise the kill half of the
-         * respawn fires the hook while the pane is momentarily dead and the whole
-         * session is torn down. Returns true on success.
+         * in the same pane. Unlike a plain command exit, the respawn does not
+         * leave the pane dead, so the `pane-died` hook (see
+         * [installAutoKillOnExit]) does not fire and the session survives.
+         * Returns true on success.
          */
         fun respawnPane(sessionName: String, command: String): Boolean {
             return try {
-                // Drop any exit hook so respawning does not kill the session.
-                ProcessBuilder("tmux", "set-hook", "-u", "-t", sessionName, "pane-died")
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .redirectError(ProcessBuilder.Redirect.DISCARD)
-                    .start()
-                    .waitFor()
-
                 val p = ProcessBuilder("tmux", "respawn-pane", "-k", "-t", sessionName, command)
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .redirectError(ProcessBuilder.Redirect.DISCARD)
@@ -83,6 +76,27 @@ class TmuxSession(
                 p.waitFor() == 0
             } catch (_: Exception) {
                 false
+            }
+        }
+
+        /**
+         * Installs a tmux hook so that when the pane's command exits, the session
+         * is killed automatically (the "Pane is dead" state would otherwise keep
+         * the session alive because of remain-on-exit). Call this after the pane
+         * has been confirmed alive, so a command that exits instantly can still be
+         * captured by [createAndRun] before the session disappears.
+         *
+         * /sb_restart is unaffected: `respawn-pane -k` does not leave the pane
+         * dead, so the hook does not fire during a restart.
+         */
+        fun installAutoKillOnExit(sessionName: String) {
+            try {
+                ProcessBuilder("tmux", "set-hook", "-t", sessionName, "pane-died", "kill-session -t =$sessionName")
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start()
+                    .waitFor()
+            } catch (_: Exception) {
             }
         }
     }
@@ -164,18 +178,17 @@ class TmuxSession(
             log.info("Plugin activated: {}", it.name)
         })
 
-        // No pane-died hook is installed: the session (and this ShellBot process)
-        // stays alive when the command exits, so the pane can be restarted later
-        // with /sb_restart via `tmux respawn-pane`. Use remain-on-exit to keep the
-        // pane around in the "dead" state until then.
+        // When the pane's command exits, auto-kill the session so attach returns
+        // cleanly. remain-on-exit keeps the pane around just long enough to
+        // capture short-lived command output. /sb_restart still works: it uses
+        // `tmux respawn-pane`, which does not leave the pane dead, so this hook
+        // does not fire during a restart.
+        installAutoKillOnExit(SESSION_NAME)
 
         val exitCode = attachToSession()
 
-        // Detach (not exit) — the session keeps running for the side-channels and
-        // Telegram bot. Clean up only when the session has actually gone away.
-        if (!isTmuxSessionAlive()) {
-            exec("tmux", "kill-session", "-t", SESSION_TARGET)
-        }
+        // Clean up any leftover session.
+        exec("tmux", "kill-session", "-t", SESSION_TARGET)
         return exitCode
     }
 
