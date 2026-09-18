@@ -45,8 +45,13 @@ class OpencodePlugin : SessionPlugin {
         state.set(OpencodeState.WORKING)
     }
 
-    override fun processImage(filePath: String): String? {
-        return "Process this image $filePath"
+    override fun processImage(filePath: String, caption: String?): String? {
+        val trimmedCaption = caption?.trim().orEmpty()
+        return if (trimmedCaption.isEmpty()) {
+            "Process this image $filePath"
+        } else {
+            "Process this image $filePath — $trimmedCaption"
+        }
     }
 
     override fun processAudio(filePath: String): String {

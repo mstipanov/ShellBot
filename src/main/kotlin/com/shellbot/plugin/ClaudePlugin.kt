@@ -29,10 +29,15 @@ class ClaudePlugin : SessionPlugin {
         state.set(ClaudeState.WORKING)
     }
 
-    override fun processImage(filePath: String): String? {
+    override fun processImage(filePath: String, caption: String?): String? {
         // For testing: just send a simple command that Claude will see
         // This should appear in Claude's terminal
-        return "Process this image $filePath"
+        val trimmedCaption = caption?.trim().orEmpty()
+        return if (trimmedCaption.isEmpty()) {
+            "Process this image $filePath"
+        } else {
+            "Process this image $filePath — $trimmedCaption"
+        }
     }
 
     override fun processAudio(filePath: String): String {

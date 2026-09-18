@@ -23,6 +23,7 @@ class TelegramApi(private val token: String) {
         val updateId: Long,
         val chatId: Long,
         val text: String?,
+        val caption: String? = null,
         val photo: List<PhotoSize>? = null,
         val document: Document? = null,
         val audio: Audio? = null,
@@ -107,6 +108,7 @@ class TelegramApi(private val token: String) {
             val chat = message.getJSONObject("chat")
             val chatId = chat.getLong("id")
             val text = message.optString("text", null)
+            val caption = message.optString("caption", null)
 
             // Parse photo attachments
             val photoArray = message.optJSONArray("photo")
@@ -162,7 +164,7 @@ class TelegramApi(private val token: String) {
                 )
             } else null
 
-            Update(updateId, chatId, text, photos, document, audio, voice)
+            Update(updateId, chatId, text, caption, photos, document, audio, voice)
         }
     }
 

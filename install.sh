@@ -198,8 +198,10 @@ echo "Creating wrapper script $INSTALL_DIR/$SCRIPT_NAME..."
 cat > "$INSTALL_DIR/$SCRIPT_NAME" << EOF
 #!/bin/bash
 JAR="$INSTALL_DIR/$JAR_NAME"
+JAVA="\$HOME/Library/Java/JavaVirtualMachines/openjdk-25.0.2/Contents/Home/bin/java"
+[ -x "\$JAVA" ] || JAVA=java
 while true; do
-    java -jar "\$JAR" "\$@"
+    "\$JAVA" -jar "\$JAR" "\$@"
     rc=\$?
     [ "\$rc" -ne 3 ] && exit "\$rc"
     echo "shellbot: restarting..." >&2

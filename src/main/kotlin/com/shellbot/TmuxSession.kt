@@ -26,6 +26,65 @@ class TmuxSession(
 
     companion object {
         private val CONFIG_DIR = Paths.get(System.getProperty("user.home"), ".shellbot").toFile()
+
+        /**
+         * Creates a detached tmux session named [sessionName] running [command],
+         * applying ShellBot's standard tmux options (remain-on-exit, mouse,
+         * scrollback, top status bar). Returns true on success.
+         *
+         * Used both for the initial session (see [createAndRun]) and to restart a
+         * session from Telegram (/sb_restart). The ";" argument is tmux's command
+         * separator — all commands are processed in a single tmux event loop
+         * iteration, before any "child exited" event.
+         */
+        fun startDetached(sessionName: String, command: String): Boolean {
+            return try {
+                val p = ProcessBuilder(
+                    "tmux", "new-session", "-d", "-s", sessionName, command,
+                    ";", "set-option", "-t", sessionName, "remain-on-exit", "on",
+                    ";", "set-option", "-t", sessionName, "mouse", "on",
+                    ";", "set-option", "-t", sessionName, "history-limit", "5000",
+                    ";", "set-option", "-t", sessionName, "status-position", "top",
+                    ";", "set-option", "-t", sessionName, "status-interval", "1",
+                    ";", "set-option", "-t", sessionName, "status-left-length", "30"
+                )
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start()
+                p.waitFor() == 0
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        /**
+         * Restarts the command running in [sessionName]'s pane in place, keeping
+         * the session (and therefore the ShellBot process attached to it) alive.
+         *
+         * `respawn-pane -k` kills the current command and starts [command] again
+         * in the same pane. The `pane-died` hook that would otherwise kill the
+         * session on exit must be removed first, otherwise the kill half of the
+         * respawn fires the hook while the pane is momentarily dead and the whole
+         * session is torn down. Returns true on success.
+         */
+        fun respawnPane(sessionName: String, command: String): Boolean {
+            return try {
+                // Drop any exit hook so respawning does not kill the session.
+                ProcessBuilder("tmux", "set-hook", "-u", "-t", sessionName, "pane-died")
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start()
+                    .waitFor()
+
+                val p = ProcessBuilder("tmux", "respawn-pane", "-k", "-t", sessionName, command)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start()
+                p.waitFor() == 0
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 
     private val SESSION_NAME = sessionId
@@ -81,20 +140,8 @@ class TmuxSession(
         // Kill any leftover session from a previous run
         exec("tmux", "kill-session", "-t", SESSION_TARGET)
 
-        // Start detached tmux session running the command, atomically setting
-        // "remain-on-exit" so the pane survives even if the command exits instantly.
-        // The ";" argument is tmux's command separator — both commands are processed
-        // in a single tmux event loop iteration, before any "child exited" event.
-        val startResult = exec(
-            "tmux", "new-session", "-d", "-s", SESSION_NAME, command,
-            ";", "set-option", "-t", SESSION_NAME, "remain-on-exit", "on",
-            ";", "set-option", "-t", SESSION_NAME, "mouse", "on",
-            ";", "set-option", "-t", SESSION_NAME, "history-limit", "5000",
-            ";", "set-option", "-t", SESSION_NAME, "status-position", "top",
-            ";", "set-option", "-t", SESSION_NAME, "status-interval", "1",
-            ";", "set-option", "-t", SESSION_NAME, "status-left-length", "30"
-        )
-        if (startResult != 0) {
+        // Start detached tmux session running the command with the standard options.
+        if (!startDetached(SESSION_NAME, command)) {
             log.error("Failed to create tmux session (is tmux installed?)")
             return 1
         }
@@ -117,13 +164,18 @@ class TmuxSession(
             log.info("Plugin activated: {}", it.name)
         })
 
-        // When the pane's command exits, auto-kill the session so attach returns cleanly.
-        exec("tmux", "set-hook", "-t", SESSION_NAME, "pane-died", "kill-session -t =$SESSION_NAME")
+        // No pane-died hook is installed: the session (and this ShellBot process)
+        // stays alive when the command exits, so the pane can be restarted later
+        // with /sb_restart via `tmux respawn-pane`. Use remain-on-exit to keep the
+        // pane around in the "dead" state until then.
 
         val exitCode = attachToSession()
 
-        // Clean up
-        exec("tmux", "kill-session", "-t", SESSION_TARGET)
+        // Detach (not exit) — the session keeps running for the side-channels and
+        // Telegram bot. Clean up only when the session has actually gone away.
+        if (!isTmuxSessionAlive()) {
+            exec("tmux", "kill-session", "-t", SESSION_TARGET)
+        }
         return exitCode
     }
 
@@ -193,7 +245,8 @@ class TmuxSession(
                     telegramSettings.token,
                     tmuxSessionName = SESSION_NAME,
                     plugin = plugin,
-                    idleNotifySeconds = telegramSettings.idleNotifySeconds
+                    idleNotifySeconds = telegramSettings.idleNotifySeconds,
+                    sessionCommand = command
                 )
                 bot.run()
             }

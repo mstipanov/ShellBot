@@ -125,7 +125,9 @@ Send `/start` to your bot to claim ownership (first user only). The bot's availa
 |---------|-------------|
 | `/sb_output` or `/sb_o` | Show last lines of output |
 | `/sb_enter` or `/sb_e` | Send Enter key |
+| `/sb_esc` | Send two Escape keys |
 | `/sb_kill` | Send Ctrl-C |
+| `/sb_restart` | Terminate and relaunch the current process (`-c` command / last `/sb_run`) |
 | `/sb_project` or `/sb_p` | Show current directory |
 | `/sb_files` or `/sb_files <dir>` | Browse files and pick one to download |
 | `/sb_help` | Show help |
@@ -185,7 +187,13 @@ ShellBot also exposes side-channels for scripting:
 
 ## Auto-Restart
 
-The install script's wrapper supports automatic restart. If the wrapped process exits with code 3, ShellBot restarts automatically.
+ShellBot keeps running when the wrapped process exits. In tmux mode the pane stays in the "dead" state (`remain-on-exit`) and the Telegram bot remains available; the process is only restarted on demand with `/sb_restart`.
+
+### `/sb_restart`
+
+`/sb_restart` terminates the process started via `-c` (tmux mode) or the last `/sb_run` command (standalone mode) and starts it again with the same command.
+
+In tmux mode the command is respawned in place with `tmux respawn-pane -k`, inside the existing tmux session. ShellBot, its monitor daemons and the Telegram bot all stay alive — nothing is torn down or relaunched. If the command is unknown (the session was started without `-c`), the restart is refused.
 
 ## Project Structure
 

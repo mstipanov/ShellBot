@@ -1,5 +1,6 @@
 package com.shellbot.telegram
 
+import com.shellbot.TmuxSession
 import com.shellbot.plugin.SessionPlugin
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -29,11 +30,12 @@ class TelegramBot(
     private val token: String,
     private val tmuxSessionName: String? = null,
     private val plugin: SessionPlugin? = null,
-    private val idleNotifySeconds: Long = 30
+    private val idleNotifySeconds: Long = 30,
+    private val sessionCommand: String? = null
 ) {
     private val api = TelegramApi(token)
     private var session: ProcessSession? = null
-    private var sessionCommand: String? = null
+    private var standaloneCommand: String? = null
     private var offset = 0L
     @Volatile
     private var ownerChatId: Long? = null
@@ -120,7 +122,9 @@ class TelegramBot(
             "sb_clear" to "Remove the reply keyboard / buttons",
             "sb_enter" to "Send Enter key",
             "sb_tab" to "Send Tab key",
+            "sb_esc" to "Send two Escape keys",
             "sb_kill" to "Kill / interrupt process",
+            "sb_restart" to "Restart the current process",
             "sb_project" to "Show current directory",
             "sb_files" to "Browse and download project files",
             "sb_run" to "Start a process (standalone mode)",
@@ -285,8 +289,10 @@ class TelegramBot(
             text.startsWith("/sb_run ") -> handleRun(chatId, text.removePrefix("/sb_run ").trim())
             text == "/sb_output" || text == "/sb_o" -> handleOutput(chatId)
             text == "/sb_kill" -> handleKill(chatId)
+            text == "/sb_restart" -> handleRestart(chatId)
             text == "/sb_enter" || text == "/sb_e" -> handleEnter(chatId)
             text == "/sb_tab" || text == "/sb_t" -> handleTab(chatId)
+            text == "/sb_esc" -> handleEsc(chatId)
             text == "/sb_help" -> handleHelp(chatId)
             text == "/sb_info" -> handleInfo(chatId)
             text == "/sb_clear" -> handleClear(chatId)
@@ -295,6 +301,14 @@ class TelegramBot(
             else -> handleInput(chatId, text)
         }
     }
+
+    /**
+     * The command currently being run in this session, used by /sb_restart to
+     * relaunch it. In tmux mode this is the command passed via -c (captured at
+     * startup); in standalone mode it is the last /sb_run command.
+     */
+    private val currentCommand: String?
+        get() = if (isTmuxMode) sessionCommand ?: standaloneCommand else standaloneCommand
 
     private fun currentSessionOutput(): String? {
         return if (isTmuxMode) {
@@ -324,7 +338,7 @@ class TelegramBot(
         currentSessionOutput()?.let { output ->
             plugin?.getSessionTitle(output)?.let { return it }
         }
-        val fallback = if (isTmuxMode) tmuxSessionName else sessionCommand
+        val fallback = currentCommand ?: if (isTmuxMode) tmuxSessionName else null
         return fallback ?: "(none)"
     }
 
@@ -482,7 +496,9 @@ class TelegramBot(
         |/sb_clear — remove the reply keyboard / buttons
         |/sb_enter or /sb_e — send Enter key
         |/sb_tab or /sb_t — send Tab key
+        |/sb_esc — send two Escape keys
         |/sb_kill — kill/interrupt process (Ctrl-C)
+        |/sb_restart — terminate and restart the current process
         |/sb_project or /sb_p — show current directory
         |/sb_files [dir] — browse files and pick one to download
         |/sb_help — show this help
@@ -530,7 +546,7 @@ class TelegramBot(
                     log.info("Saved image: {}", filePath)
 
                     // Check if we have a plugin that can process audio
-                    val command = plugin?.processImage(filePath.toFile().absolutePath)
+                    val command = plugin?.processImage(filePath.toFile().absolutePath, update.caption)
                     if (command == null) {
                         log.warn("No plugin available to process images")
                         api.sendMessage(chatId, "No plugin available to process images.")
@@ -1186,6 +1202,63 @@ class TelegramBot(
         }
     }
 
+    private fun handleEsc(chatId: Long) {
+        if (isTmuxMode) {
+            if (!isTmuxAlive()) {
+                api.sendMessage(chatId, "Tmux session is not running.")
+                return
+            }
+            tmuxSendEscape(2)
+            idleNotificationSent = false
+            generalIdleNotificationSent = false
+            deleteSessionInactiveFile()
+            // Delete idle message when user sends input
+            val owner = ownerChatId
+            val previousIdleMessageId = lastIdleMessageId
+
+            if (owner != null && previousIdleMessageId != null) {
+                val deleted = api.deleteMessage(owner, previousIdleMessageId)
+                if (deleted) {
+                    lastIdleMessageId = null
+                } else {
+                    log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+                }
+            }
+            // Always clear lastSentMessageId when user sends input
+            // so that new output appears as a new message, not editing the old one
+            lastSentContent = null
+            lastSentMessageId = null
+            plugin?.onUserInput()
+        } else {
+            val s = session
+            if (s == null || !s.isAlive()) {
+                api.sendMessage(chatId, "No running process. Use /run <command> first.")
+                return
+            }
+            s.sendRaw("\u001b\u001b")
+            idleNotificationSent = false
+            generalIdleNotificationSent = false
+            deleteSessionInactiveFile()
+            // Delete idle message when user sends input
+            val owner = ownerChatId
+            val previousIdleMessageId = lastIdleMessageId
+
+            if (owner != null && previousIdleMessageId != null) {
+                val deleted = api.deleteMessage(owner, previousIdleMessageId)
+                if (deleted) {
+                    lastIdleMessageId = null
+                } else {
+                    log.warn("Failed to delete idle message {}, chatId={}", previousIdleMessageId, owner)
+                }
+            }
+            // Always clear lastSentMessageId when user sends input
+            // so that new output appears as a new message, not editing the old one
+            lastSentContent = null
+            lastSentMessageId = null
+            plugin?.onUserInput()
+        }
+    }
+
     private fun handleInput(chatId: Long, text: String) {
         if (isTmuxMode) {
             if (!isTmuxAlive()) {
@@ -1305,6 +1378,62 @@ class TelegramBot(
         }
     }
 
+    // --- Restart ---
+
+    /**
+     * /sb_restart — terminate the process started via -c (tmux mode) or /sb_run
+     * (standalone mode) and start it again with the same command.
+     *
+     * In tmux mode the command is respawned inside the existing pane with
+     * `tmux respawn-pane -k`, so the tmux session, the monitor daemons and this
+     * Telegram bot all stay alive — ShellBot is never torn down. If the command
+     * is unknown the restart is refused rather than killing anything.
+     */
+    private fun handleRestart(chatId: Long) {
+        val command = currentCommand
+        if (command.isNullOrBlank()) {
+            api.sendMessage(chatId, "No command to restart (started without -c / /sb_run).")
+            return
+        }
+
+        if (isTmuxMode) {
+            log.info("Restarting tmux session '{}' with command: {}", tmuxSessionName, command)
+            if (!isTmuxAlive()) {
+                api.sendMessage(chatId, "Tmux session is not running.")
+                return
+            }
+            if (!TmuxSession.respawnPane(tmuxSessionName!!, command)) {
+                api.sendMessage(chatId, "Failed to restart: could not respawn the tmux pane.")
+                return
+            }
+            // The pane is live again — reset notification state so the restarted
+            // process is treated as a fresh session.
+            idleNotificationSent = false
+            generalIdleNotificationSent = false
+            deleteSessionInactiveFile()
+            lastSentContent = null
+            lastSentMessageId = null
+            plugin?.onUserInput()
+            api.sendMessage(chatId, "Restarting: $command")
+        } else {
+            log.info("Restarting standalone process with command: {}", command)
+            session?.let { if (it.isAlive()) it.kill() }
+            try {
+                session = ProcessSession(command)
+                standaloneCommand = command
+                idleNotificationSent = false
+                generalIdleNotificationSent = false
+                deleteSessionInactiveFile()
+                lastSentContent = null
+                lastSentMessageId = null
+                plugin?.onUserInput()
+                api.sendMessage(chatId, "Restarted: $command")
+            } catch (e: Exception) {
+                api.sendMessage(chatId, "Failed to restart process: ${e.message}")
+            }
+        }
+    }
+
     // --- Run (standalone only) ---
 
     private fun handleRun(chatId: Long, command: String) {
@@ -1319,7 +1448,7 @@ class TelegramBot(
         session?.let { if (it.isAlive()) it.kill() }
         try {
             session = ProcessSession(command)
-            sessionCommand = command
+            standaloneCommand = command
             api.sendMessage(chatId, "Started: $command")
         } catch (e: Exception) {
             api.sendMessage(chatId, "Failed to start process: ${e.message}")
@@ -1336,6 +1465,13 @@ class TelegramBot(
                 var lastContent: String? = null
 
                 while (isTmuxAlive()) {
+                    // If the command exited, the pane is paused (remain-on-exit)
+                    // and waits for /sb_restart. Skip capture while dead so the
+                    // "Pane is dead" output isn't streamed as new content.
+                    if (!isTmuxPaneAlive()) {
+                        Thread.sleep(1000)
+                        continue
+                    }
                     Thread.sleep(2000)
                     try {
                         val output = tmuxCapturePane()
@@ -1512,6 +1648,21 @@ class TelegramBot(
         return tmuxExec("has-session", "-t", tmuxTarget) == 0
     }
 
+    /** Returns true if the pane's process is still running (not "dead"). */
+    private fun isTmuxPaneAlive(): Boolean {
+        if (!isTmuxMode) return false
+        return try {
+            val pb = ProcessBuilder("tmux", "display-message", "-t", tmuxSessionName!!, "-p", "#{pane_dead}")
+            pb.redirectErrorStream(true)
+            val p = pb.start()
+            val output = p.inputStream.bufferedReader().readText().trim()
+            p.waitFor()
+            output != "1"
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun tmuxSendKeys(text: String) {
         tmuxExec("send-keys", "-t", tmuxSessionName!!, "-l", text)
     }
@@ -1522,6 +1673,12 @@ class TelegramBot(
 
     private fun tmuxSendTab() {
         tmuxExec("send-keys", "-t", tmuxSessionName!!, "Tab")
+    }
+
+    private fun tmuxSendEscape(times: Int = 1) {
+        repeat(times) {
+            tmuxExec("send-keys", "-t", tmuxSessionName!!, "Escape")
+        }
     }
 
     private fun tmuxCapturePane(): String {
